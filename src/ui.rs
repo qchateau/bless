@@ -22,6 +22,7 @@ struct Ui {
     status: String,
     wrap: bool,
     align_bottom: bool,
+    follow: bool,
 }
 
 impl Ui {
@@ -31,6 +32,7 @@ impl Ui {
             status: String::new(),
             wrap: true,
             align_bottom: false,
+            follow: false,
         }
     }
 }
@@ -59,7 +61,7 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
     loop {
         terminal.draw(|f| refresh(f, &mut ui, file_view))?;
 
-        if crossterm::event::poll(Duration::from_secs(1))? {
+        if crossterm::event::poll(Duration::from_millis(500))? {
             if let Event::Key(key) = event::read()? {
                 ui.status.clear();
                 let line_before = file_view.current_line();
@@ -129,6 +131,8 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
                         .unwrap_or_else(|e| ui.status = format!("{:?}", e))
                 } else if ui.command == "w" {
                     ui.wrap = !ui.wrap
+                } else if ui.command == "f" {
+                    ui.follow = !ui.follow;
                 } else if ui.command == "GG" {
                     file_view.bottom();
                     file_view.up(term_size.height.into()).ok();
@@ -190,6 +194,12 @@ fn wrap_text(text: String, width: usize) -> String {
 }
 
 fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui, file_view: &mut dyn FileView) {
+    if ui.follow {
+        file_view.bottom();
+        file_view.up(f.size().height.into()).ok();
+        ui.align_bottom = true;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(4), Constraint::Percentage(100)].as_ref())
@@ -216,14 +226,27 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui, file_view: &mut dyn FileVi
         break text;
     };
 
+    let mut flags = Vec::new();
+    if ui.follow {
+        flags.push("Follow")
+    }
+    if ui.wrap {
+        flags.push("Wrap")
+    }
+
     let header = Text::from(format!(
-        "Line {}, Offset {} ({:.1}%)\n{}: {}",
+        "Line {}, Offset {} ({:.1}%){}\n{}: {}",
         file_view
             .current_line()
             .map(|x| x.to_string())
             .unwrap_or("?".to_owned()),
         human_bytes(file_view.offest() as f64),
         100.0 * file_view.offest() as f64 / file_view.file_size() as f64,
+        if flags.is_empty() {
+            "".to_owned()
+        } else {
+            format!(", {}", flags.join(", "))
+        },
         if ui.status.is_empty() {
             "Command"
         } else {
