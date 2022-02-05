@@ -6,7 +6,7 @@ pub trait FileView {
     fn file_size(&self) -> u64;
     fn current_line(&self) -> Option<i64>;
     fn offest(&self) -> u64;
-    fn view(&mut self, nlines: u64) -> String;
+    fn view(&mut self, nlines: u64) -> Result<String, ViewError>;
     fn up(&mut self, lines: u64) -> Result<(), ViewError>;
     fn down(&mut self, lines: u64) -> Result<(), ViewError>;
     fn jump_to_line(&mut self, line: u64) -> Result<(), ViewError>;
@@ -67,25 +67,27 @@ impl FileView for BufferedFileView {
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    fn view(&mut self, nlines: u64) -> String {
+    fn view(&mut self, nlines: u64) -> Result<String, ViewError> {
         let mut is_end = false;
         let mut i = 10;
 
-        return loop {
+        loop {
             let view = match self.current_view() {
-                Err(err) => return format!("utf-8 error: {}", err),
+                Err(err) => return Ok(format!("utf-8 error: {}", err)),
                 Ok(view) => view,
             };
-            if view.lines().count() as u64 >= nlines {
-                return view.to_owned();
+            if is_end || view.lines().count() as u64 >= nlines {
+                return Ok(view.to_owned());
             }
 
             i -= 1;
-            if is_end || i <= 0 {
-                break view.to_owned();
+            if i <= 0 {
+                return Err(ViewError {
+                    msg: "exceeded max number of iterations".to_owned(),
+                });
             }
             is_end = self.buffer.load_next().is_none();
-        };
+        }
     }
     fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut i = 10;
@@ -108,19 +110,21 @@ impl FileView for BufferedFileView {
                         i -= 1;
                         if i <= 0 {
                             return Err(ViewError {
-                                msg: format!(
-                                    "exceeded max number of iterations, last read: {}",
-                                    read_bytes
-                                ),
+                                msg: "exceeded max number of iterations".to_owned(),
                             });
                         }
                     }
                     None => {
+                        let was_at_top = self.view_offset == 0;
                         self.view_offset = 0;
                         self.current_line = Some(0);
-                        return Err(ViewError {
-                            msg: "already at the top".to_owned(),
-                        });
+                        if was_at_top {
+                            return Err(ViewError {
+                                msg: "already at the top".to_owned(),
+                            });
+                        } else {
+                            lines -= 1;
+                        }
                     }
                 },
             }

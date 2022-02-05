@@ -20,6 +20,8 @@ use crate::file_view::FileView;
 struct Ui {
     command: String,
     status: String,
+    wrap: bool,
+    align_bottom: bool,
 }
 
 impl Ui {
@@ -27,6 +29,8 @@ impl Ui {
         Self {
             command: String::new(),
             status: String::new(),
+            wrap: true,
+            align_bottom: false,
         }
     }
 }
@@ -53,11 +57,13 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
 
     let mut ui = Ui::new();
     loop {
-        terminal.draw(|f| refresh(f, &ui, file_view))?;
+        terminal.draw(|f| refresh(f, &mut ui, file_view))?;
 
         if crossterm::event::poll(Duration::from_secs(1))? {
             if let Event::Key(key) = event::read()? {
                 ui.status.clear();
+                let line_before = file_view.current_line();
+                let mut align_bottom = false;
                 let term_size = terminal.size().unwrap();
                 let lines = match key.modifiers {
                     KeyModifiers::SHIFT => 5,
@@ -121,8 +127,12 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
                     file_view
                         .up(lines)
                         .unwrap_or_else(|e| ui.status = format!("{:?}", e))
+                } else if ui.command == "w" {
+                    ui.wrap = !ui.wrap
                 } else if ui.command == "GG" {
                     file_view.bottom();
+                    file_view.up(term_size.height.into()).ok();
+                    align_bottom = true;
                 } else if ui.command == "gg" {
                     file_view.top();
                 } else if ui.command.to_lowercase().ends_with("gg") {
@@ -152,6 +162,12 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
                 if done {
                     ui.command.clear()
                 }
+
+                if align_bottom {
+                    ui.align_bottom = true;
+                } else if file_view.current_line() != line_before {
+                    ui.align_bottom = false;
+                }
             }
         }
     }
@@ -161,7 +177,19 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
     return Ok(());
 }
 
-fn refresh<B: Backend>(f: &mut Frame<B>, ui: &Ui, file_view: &mut dyn FileView) {
+fn wrap_text(text: String, width: usize) -> String {
+    let mut lines = Vec::new();
+    for mut line in text.lines() {
+        while line.len() > width {
+            lines.push(line.get(..width).unwrap());
+            line = &line[width..];
+        }
+        lines.push(line);
+    }
+    return lines.join("\n");
+}
+
+fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui, file_view: &mut dyn FileView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(4), Constraint::Percentage(100)].as_ref())
@@ -169,11 +197,23 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &Ui, file_view: &mut dyn FileView) 
 
     let text = loop {
         let height: u64 = chunks[1].height.into();
-        let text = file_view.view(height);
-        let missing = height.saturating_sub(text.lines().count() as u64);
-        if missing <= 0 || file_view.up(missing).is_err() {
-            break text;
+        let mut text = match file_view.view(height) {
+            Ok(x) => x,
+            Err(e) => {
+                ui.status = format!("{:?}", e);
+                String::new()
+            }
+        };
+        if ui.wrap {
+            text = wrap_text(text, chunks[1].width.into());
+            if ui.align_bottom
+                && text.lines().count() > height as usize
+                && file_view.down(1).is_ok()
+            {
+                continue;
+            }
         }
+        break text;
     };
 
     let header = Text::from(format!(

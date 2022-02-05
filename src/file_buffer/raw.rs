@@ -38,7 +38,7 @@ impl super::FileBuffer for FileBuffer {
     }
     fn load_prev(&mut self) -> Option<usize> {
         let shift = min(self.buffer_offset, BUFFER_SIZE as u64);
-        let mut prev_buffer = vec![0u8; BUFFER_SIZE];
+        let mut prev_buffer = vec![0u8; shift as usize];
 
         let read_bytes = loop {
             if self.buffer_offset == 0 {
