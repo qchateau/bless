@@ -17,6 +17,20 @@ use tui::{
 
 use crate::file_view::FileView;
 
+struct Ui {
+    command: String,
+    status: String,
+}
+
+impl Ui {
+    fn new() -> Self {
+        Self {
+            command: String::new(),
+            status: String::new(),
+        }
+    }
+}
+
 pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
     let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
@@ -37,12 +51,13 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
         default_panic(panic_info);
     }));
 
-    let mut command = String::new();
+    let mut ui = Ui::new();
     loop {
-        terminal.draw(|f| refresh(f, &command, file_view))?;
+        terminal.draw(|f| refresh(f, &ui, file_view))?;
 
         if crossterm::event::poll(Duration::from_secs(1))? {
             if let Event::Key(key) = event::read()? {
+                ui.status.clear();
                 let term_size = terminal.size().unwrap();
                 let lines = match key.modifiers {
                     KeyModifiers::SHIFT => 5,
@@ -53,61 +68,73 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
                     KeyEvent {
                         modifiers: KeyModifiers::CONTROL,
                         code: KeyCode::Char('c'),
-                    } => command.clear(),
+                    } => ui.command.clear(),
                     KeyEvent {
                         code: KeyCode::Char(c),
                         ..
-                    } => command.push(c),
+                    } => ui.command.push(c),
                     KeyEvent {
                         code: KeyCode::Down,
                         ..
-                    } => file_view.down(lines),
+                    } => file_view
+                        .down(lines)
+                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
                     KeyEvent {
                         code: KeyCode::Up, ..
-                    } => file_view.up(lines),
+                    } => file_view
+                        .up(lines)
+                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
                     KeyEvent {
                         code: KeyCode::PageDown,
                         ..
-                    } => file_view.down(term_size.height.into()),
+                    } => file_view
+                        .down(term_size.height.into())
+                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
                     KeyEvent {
                         code: KeyCode::PageUp,
                         ..
-                    } => file_view.up(term_size.height.into()),
+                    } => file_view
+                        .up(term_size.height.into())
+                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
                     KeyEvent {
                         code: KeyCode::Esc, ..
-                    } => command.clear(),
+                    } => ui.command.clear(),
                     KeyEvent {
                         code: KeyCode::Enter,
                         ..
-                    } => command.push('\n'),
+                    } => ui.command.push('\n'),
                     KeyEvent {
                         code: KeyCode::Backspace,
                         ..
                     } => {
-                        command.pop();
+                        ui.command.pop();
                     }
                     _ => (),
                 }
 
                 let mut done = true;
-                if command.to_lowercase() == "j" {
-                    file_view.down(lines)
-                } else if command.to_lowercase() == "k" {
-                    file_view.up(lines)
-                } else if command == "GG" {
+                if ui.command.to_lowercase() == "j" {
+                    file_view
+                        .down(lines)
+                        .unwrap_or_else(|e| ui.status = format!("{:?}", e))
+                } else if ui.command.to_lowercase() == "k" {
+                    file_view
+                        .up(lines)
+                        .unwrap_or_else(|e| ui.status = format!("{:?}", e))
+                } else if ui.command == "GG" {
                     file_view.bottom();
-                } else if command == "gg" {
+                } else if ui.command == "gg" {
                     file_view.top();
-                } else if command.to_lowercase().ends_with("gg") {
-                    command
-                        .get(..command.len() - 2)
+                } else if ui.command.to_lowercase().ends_with("gg") {
+                    ui.command
+                        .get(..ui.command.len() - 2)
                         .unwrap()
                         .parse::<u64>()
                         .map(|line| file_view.jump_to_line(line))
                         .ok();
-                } else if command.to_lowercase().ends_with("pp") {
-                    command
-                        .get(..command.len() - 2)
+                } else if ui.command.to_lowercase().ends_with("pp") {
+                    ui.command
+                        .get(..ui.command.len() - 2)
                         .unwrap()
                         .parse::<f64>()
                         .map(|percent| {
@@ -116,14 +143,14 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
                             )
                         })
                         .ok();
-                } else if command == "q" {
+                } else if ui.command == "q" {
                     break;
                 } else {
-                    done = command.ends_with("\n")
+                    done = ui.command.ends_with("\n")
                 }
 
                 if done {
-                    command.clear()
+                    ui.command.clear()
                 }
             }
         }
@@ -134,23 +161,42 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
     return Ok(());
 }
 
-fn refresh<B: Backend>(f: &mut Frame<B>, command: &str, file_view: &mut dyn FileView) {
+fn refresh<B: Backend>(f: &mut Frame<B>, ui: &Ui, file_view: &mut dyn FileView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(4), Constraint::Percentage(100)].as_ref())
         .split(f.size());
 
-    let text = Text::from(format!(
-        "Line {}, Offset {} ({:.1}%)\nCommand: {}",
+    let text = loop {
+        let height: u64 = chunks[1].height.into();
+        let text = file_view.view(height);
+        let missing = height.saturating_sub(text.lines().count() as u64);
+        if missing <= 0 || file_view.up(missing).is_err() {
+            break text;
+        }
+    };
+
+    let header = Text::from(format!(
+        "Line {}, Offset {} ({:.1}%)\n{}: {}",
         file_view
             .current_line()
             .map(|x| x.to_string())
             .unwrap_or("?".to_owned()),
         human_bytes(file_view.offest() as f64),
         100.0 * file_view.offest() as f64 / file_view.file_size() as f64,
-        command
+        if ui.status.is_empty() {
+            "Command"
+        } else {
+            "Status"
+        },
+        if ui.status.is_empty() {
+            &ui.command
+        } else {
+            &ui.status
+        },
     ));
-    let paragraph = Paragraph::new(text)
+
+    let paragraph = Paragraph::new(header)
         .style(Style::default())
         .block(
             Block::default()
@@ -163,16 +209,6 @@ fn refresh<B: Backend>(f: &mut Frame<B>, command: &str, file_view: &mut dyn File
         )
         .alignment(Alignment::Left);
     f.render_widget(paragraph, chunks[0]);
-
-    let text = loop {
-        let height: u64 = chunks[1].height.into();
-        let text = file_view.view(height);
-        let missing = height.saturating_sub(text.lines().count() as u64);
-        if file_view.current_line() == Some(0) || missing <= 0 {
-            break text;
-        }
-        file_view.up(missing);
-    };
 
     let paragraph = Paragraph::new(text)
         .style(Style::default())
