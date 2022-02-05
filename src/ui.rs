@@ -76,7 +76,13 @@ pub fn run(file_view: &mut dyn FileView) -> io::Result<()> {
                     KeyEvent {
                         modifiers: KeyModifiers::CONTROL,
                         code: KeyCode::Char('c'),
-                    } => ui.command.clear(),
+                    } => {
+                        if ui.command.is_empty() {
+                            break;
+                        } else {
+                            ui.command.clear()
+                        }
+                    }
                     KeyEvent {
                         code: KeyCode::Char(c),
                         ..
