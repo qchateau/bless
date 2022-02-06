@@ -1,4 +1,4 @@
-use super::raw;
+use super::{raw, ShrinkResult};
 use bzip2::Decompress;
 use std::{fs::File, io, io::Read, ops::Range};
 
@@ -88,5 +88,8 @@ impl super::FileBuffer for FileBuffer {
         let size_before = self.decoded.len();
         self.decode().ok();
         return Some(self.decoded.len() - size_before);
+    }
+    fn shrink_around(&mut self, pos: u64) -> ShrinkResult {
+        return self.raw_buffer.shrink_around(pos);
     }
 }

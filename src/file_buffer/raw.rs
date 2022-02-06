@@ -1,4 +1,12 @@
-use std::{cmp::min, fs::File, io, ops::Range, os::unix::fs::FileExt};
+use super::ShrinkResult;
+use num::clamp;
+use std::{
+    cmp::{max, min},
+    fs::File,
+    io,
+    ops::Range,
+    os::unix::fs::FileExt,
+};
 
 const BUFFER_SIZE: usize = 0xffff;
 
@@ -78,5 +86,32 @@ impl super::FileBuffer for FileBuffer {
         let read_size = next_buffer.len();
         self.buffer.append(&mut next_buffer);
         return Some(read_size);
+    }
+
+    fn shrink_around(&mut self, pos: u64) -> ShrinkResult {
+        let old_buffer_end = self.buffer_offset + self.buffer.len() as u64;
+        let pos = clamp(pos, self.buffer_offset, old_buffer_end);
+
+        let old_buffer_offset = self.buffer_offset;
+        let new_buffer_offset = max(
+            pos.saturating_sub(BUFFER_SIZE as u64 / 2),
+            old_buffer_offset,
+        );
+        let new_buffer_end = min(new_buffer_offset + BUFFER_SIZE as u64, old_buffer_end);
+
+        let removed_before = (new_buffer_offset - old_buffer_offset) as usize;
+        let new_size = (new_buffer_end - new_buffer_offset) as usize;
+
+        self.buffer_offset = new_buffer_offset;
+        self.buffer = self
+            .buffer
+            .get(removed_before..(removed_before + new_size))
+            .unwrap()
+            .to_owned();
+
+        return ShrinkResult {
+            before: removed_before as u64,
+            after: old_buffer_end - new_buffer_end,
+        };
     }
 }

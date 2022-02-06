@@ -1,18 +1,42 @@
 use crate::file_buffer::{bzip2, raw, FileBuffer};
-use std::{io, str::Utf8Error};
+use regex::bytes::Regex;
+use std::io;
+
+const MATCH_WINDOW: usize = 0xffff;
 
 pub trait FileView {
     fn file_path(&self) -> &str;
     fn file_size(&self) -> u64;
     fn current_line(&self) -> Option<i64>;
     fn offest(&self) -> u64;
-    fn view(&mut self, nlines: u64) -> Result<String, ViewError>;
+    fn view(&mut self, nlines: u64) -> Result<&str, ViewError>;
     fn up(&mut self, lines: u64) -> Result<(), ViewError>;
+    fn up_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError>;
     fn down(&mut self, lines: u64) -> Result<(), ViewError>;
+    fn down_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError>;
     fn jump_to_line(&mut self, line: u64) -> Result<(), ViewError>;
     fn jump_to_byte(&mut self, bytes: u64);
     fn top(&mut self);
     fn bottom(&mut self);
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewError {
+    msg: String,
+}
+
+impl From<String> for ViewError {
+    fn from(msg: String) -> Self {
+        Self { msg }
+    }
+}
+
+impl From<&str> for ViewError {
+    fn from(msg: &str) -> Self {
+        Self {
+            msg: String::from(msg),
+        }
+    }
 }
 
 pub struct BufferedFileView {
@@ -20,11 +44,6 @@ pub struct BufferedFileView {
     buffer: Box<dyn FileBuffer>,
     view_offset: usize,
     current_line: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ViewError {
-    msg: String,
 }
 
 impl BufferedFileView {
@@ -46,8 +65,17 @@ impl BufferedFileView {
             current_line: Some(0),
         });
     }
-    fn current_view(&self) -> Result<&str, Utf8Error> {
-        return std::str::from_utf8(self.buffer.data().get(self.view_offset..).unwrap_or(b""));
+    fn current_view(&self) -> &[u8] {
+        return self.buffer.data().get(self.view_offset..).unwrap_or(b"");
+    }
+    fn above_view(&self) -> &[u8] {
+        return self.buffer.data().get(..self.view_offset).unwrap_or(b"");
+    }
+    fn shrink(&mut self) {
+        let removed = self
+            .buffer
+            .shrink_around(self.view_offset as u64 + self.buffer.range().start);
+        self.view_offset -= removed.before as usize;
     }
 }
 
@@ -67,27 +95,27 @@ impl FileView for BufferedFileView {
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    fn view(&mut self, nlines: u64) -> Result<String, ViewError> {
-        let mut is_end = false;
+    fn view(&mut self, nlines: u64) -> Result<&str, ViewError> {
         let mut i = 10;
 
-        loop {
-            let view = match self.current_view() {
-                Err(err) => return Ok(format!("utf-8 error: {}", err)),
-                Ok(view) => view,
-            };
-            if is_end || view.lines().count() as u64 >= nlines {
-                return Ok(view.to_owned());
-            }
-
+        while !self
+            .current_view()
+            .iter()
+            .filter(|&&x| x == b'\n')
+            .nth(nlines as usize - 1)
+            .is_some()
+        {
             i -= 1;
             if i <= 0 {
-                return Err(ViewError {
-                    msg: "exceeded max number of iterations".to_owned(),
-                });
+                return Err(ViewError::from("exceeded max number of iterations"));
             }
-            is_end = self.buffer.load_next().is_none();
+            if self.buffer.load_next().is_none() {
+                break;
+            }
         }
+
+        let string = std::str::from_utf8(self.current_view()).unwrap_or("invalid utf-8");
+        return Ok(string);
     }
     fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut i = 10;
@@ -107,11 +135,10 @@ impl FileView for BufferedFileView {
                 None => match self.buffer.load_prev() {
                     Some(read_bytes) => {
                         self.view_offset += read_bytes;
+                        self.shrink();
                         i -= 1;
                         if i <= 0 {
-                            return Err(ViewError {
-                                msg: "exceeded max number of iterations".to_owned(),
-                            });
+                            return Err(ViewError::from("exceeded max number of iterations"));
                         }
                     }
                     None => {
@@ -119,15 +146,38 @@ impl FileView for BufferedFileView {
                         self.view_offset = 0;
                         self.current_line = Some(0);
                         if was_at_top {
-                            return Err(ViewError {
-                                msg: "already at the top".to_owned(),
-                            });
+                            return Err(ViewError::from("already at the top"));
                         } else {
                             lines -= 1;
                         }
                     }
                 },
             }
+        }
+        return Ok(());
+    }
+    fn up_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError> {
+        loop {
+            let m = regex.find_iter(self.above_view()).last();
+            if let Some(m) = m {
+                self.view_offset = m.start();
+                self.up(1).ok();
+                break;
+            }
+            let loaded = self.buffer.load_prev();
+            self.view_offset = loaded.unwrap_or(0) + MATCH_WINDOW;
+            if loaded.is_none() {
+                break;
+            }
+        }
+
+        self.shrink();
+        while !self
+            .view(1)
+            .map(|x| regex.is_match(x.lines().nth(0).unwrap().as_bytes()))
+            .unwrap_or(false)
+        {
+            self.up(1)?;
         }
         return Ok(());
     }
@@ -150,21 +200,50 @@ impl FileView for BufferedFileView {
                 }
                 None => match self.buffer.load_next() {
                     None => {
-                        return Err(ViewError {
-                            msg: "already at the bottom".to_owned(),
-                        })
+                        return Err(ViewError::from("already at the bottom"));
                     }
-                    _ => {
+                    Some(_) => {
+                        self.shrink();
                         i -= 1;
                         if i <= 0 {
-                            return Err(ViewError {
-                                msg: "exceeded max number of iterations".to_owned(),
-                            });
+                            return Err(ViewError::from("exceeded max number of iterations"));
                         }
                     }
                 },
             }
         }
+        return Ok(());
+    }
+    fn down_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError> {
+        loop {
+            let m = regex.find(self.current_view());
+            if let Some(m) = m {
+                self.view_offset = m.start();
+                self.up(1).ok();
+                break;
+            }
+
+            let loaded = self.buffer.load_next();
+            self.view_offset = self
+                .buffer
+                .data()
+                .len()
+                .saturating_sub(loaded.unwrap_or(0) + MATCH_WINDOW);
+            if loaded.is_none() {
+                break;
+            }
+        }
+
+        self.shrink();
+        while !self
+            .view(1)
+            .map(|x| x.lines().nth(0))
+            .map(|x| x.map(|x| regex.is_match(x.as_bytes())).unwrap_or(false))
+            .unwrap_or(false)
+        {
+            self.down(1)?;
+        }
+
         return Ok(());
     }
     fn jump_to_line(&mut self, line: u64) -> Result<(), ViewError> {

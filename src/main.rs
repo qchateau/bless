@@ -19,7 +19,7 @@ fn main() -> io::Result<()> {
         path => BufferedFileView::new_plaintext(path),
     };
     return match file_view {
-        Ok(mut file_view) => ui::run(&mut file_view),
+        Ok(file_view) => ui::run(Box::new(file_view)),
         Err(err) => Err(err),
     };
 }
