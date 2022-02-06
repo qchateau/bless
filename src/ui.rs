@@ -5,7 +5,7 @@ use crossterm::{
 };
 use human_bytes::human_bytes;
 use regex::{bytes, Regex};
-use std::{fmt::Display, io, panic, str::from_utf8, time::Duration};
+use std::{fmt::Display, io, str::from_utf8, time::Duration};
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout},
@@ -52,18 +52,7 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
 
     enable_raw_mode()?;
     execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-    let restore_terminal = || -> io::Result<()> {
-        // restore terminal
-        disable_raw_mode()?;
-        execute!(io::stdout(), LeaveAlternateScreen)?;
-        return Ok(());
-    };
-
-    let default_panic = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
-        restore_terminal().unwrap_or_else(|err| println!("Error restoring terminal: {:?}", err));
-        default_panic(panic_info);
-    }));
+    let _cleanup = ResetTermOnCleanup;
 
     let mut ui = Ui::new(file_view);
     loop {
@@ -240,8 +229,6 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
         }
     }
 
-    // restore terminal
-    restore_terminal()?;
     return Ok(());
 }
 
@@ -363,4 +350,13 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui) {
         .block(Block::default())
         .alignment(Alignment::Left);
     f.render_widget(paragraph, chunks[1]);
+}
+
+struct ResetTermOnCleanup;
+
+impl Drop for ResetTermOnCleanup {
+    fn drop(&mut self) {
+        disable_raw_mode().ok();
+        execute!(io::stdout(), LeaveAlternateScreen).ok();
+    }
 }
