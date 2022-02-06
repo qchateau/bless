@@ -5,7 +5,7 @@ use crossterm::{
 };
 use human_bytes::human_bytes;
 use regex::{bytes, Regex};
-use std::{io, panic, time::Duration};
+use std::{fmt::Display, io, panic, str::from_utf8, time::Duration};
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout},
@@ -15,7 +15,7 @@ use tui::{
     Frame, Terminal,
 };
 
-use crate::file_view::FileView;
+use crate::{errors::ViewError, file_view::FileView};
 
 struct Ui {
     file_view: Box<dyn FileView>,
@@ -38,6 +38,10 @@ impl Ui {
             align_bottom: false,
             follow: false,
         }
+    }
+
+    fn set_error<D: Display>(&mut self, e: D) {
+        self.status = format!("{}", e);
     }
 }
 
@@ -70,13 +74,14 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
                 ui.status.clear();
                 let line_before = ui.file_view.current_line();
                 let mut align_bottom = false;
+                let mut reset = false;
                 let term_size = terminal.size().unwrap();
                 let lines = match key.modifiers {
                     KeyModifiers::SHIFT => 5,
                     _ => 1,
                 };
 
-                match key {
+                let res1 = match key {
                     KeyEvent {
                         modifiers: KeyModifiers::CONTROL,
                         code: KeyCode::Char('c'),
@@ -84,125 +89,134 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
                         if ui.command.is_empty() {
                             break;
                         } else {
-                            ui.command.clear()
+                            reset = true;
                         }
+                        Ok(())
                     }
                     KeyEvent {
                         code: KeyCode::Char(c),
                         ..
-                    } => ui.command.push(c),
+                    } => {
+                        ui.command.push(c);
+                        Ok(())
+                    }
                     KeyEvent {
                         code: KeyCode::Down,
                         ..
-                    } => ui
-                        .file_view
-                        .down(lines)
-                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
+                    } => ui.file_view.down(lines),
                     KeyEvent {
                         code: KeyCode::Up, ..
-                    } => ui
-                        .file_view
-                        .up(lines)
-                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
+                    } => ui.file_view.up(lines),
                     KeyEvent {
                         code: KeyCode::PageDown,
                         ..
-                    } => ui
-                        .file_view
-                        .down(term_size.height.into())
-                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
+                    } => ui.file_view.down(term_size.height.into()),
                     KeyEvent {
                         code: KeyCode::PageUp,
                         ..
-                    } => ui
-                        .file_view
-                        .up(term_size.height.into())
-                        .unwrap_or_else(|e| ui.status = format!("{:?}", e)),
+                    } => ui.file_view.up(term_size.height.into()),
                     KeyEvent {
                         code: KeyCode::Esc, ..
-                    } => ui.command.clear(),
+                    } => {
+                        reset = true;
+                        Ok(())
+                    }
                     KeyEvent {
                         code: KeyCode::Enter,
                         ..
-                    } => ui.command.push('\n'),
+                    } => {
+                        ui.command.push('\n');
+                        Ok(())
+                    }
                     KeyEvent {
                         code: KeyCode::Backspace,
                         ..
                     } => {
                         ui.command.pop();
+                        Ok(())
                     }
-                    _ => (),
-                }
+                    _ => Ok(()),
+                };
 
                 let mut done = true;
-                match ui.command.as_str() {
+                let res2 = match ui.command.as_str() {
                     "q" => break,
-                    "w" => ui.wrap = !ui.wrap,
-                    "f" => ui.follow = !ui.follow,
+                    "w" => {
+                        ui.wrap = !ui.wrap;
+                        Ok(())
+                    }
+                    "f" => {
+                        ui.follow = !ui.follow;
+                        Ok(())
+                    }
                     "n" => {
                         if let Some(re) = ui.search_pattern.as_ref() {
-                            ui.file_view.down(1).ok();
-                            ui.file_view
-                                .down_to_line_matching(&bytes::Regex::new(re.as_str()).unwrap())
-                                .unwrap_or_else(|e| ui.status = format!("{:?}", e));
+                            ui.file_view.down_to_line_matching(
+                                &bytes::Regex::new(re.as_str()).unwrap(),
+                                true,
+                            )
+                        } else {
+                            Err(ViewError::from("nothing to search"))
                         }
                     }
                     "N" => {
                         if let Some(re) = ui.search_pattern.as_ref() {
-                            ui.file_view.up(1).ok();
                             ui.file_view
                                 .up_to_line_matching(&bytes::Regex::new(re.as_str()).unwrap())
-                                .unwrap_or_else(|e| ui.status = format!("{:?}", e));
+                        } else {
+                            Err(ViewError::from("nothing to search"))
                         }
                     }
-                    "gg" => ui.file_view.top(),
+                    "gg" => {
+                        ui.file_view.top();
+                        Ok(())
+                    }
                     "GG" => {
-                        ui.file_view.bottom();
-                        ui.file_view.up(term_size.height.into()).ok();
                         align_bottom = true;
+                        ui.file_view.bottom();
+                        ui.file_view.up(term_size.height.into())
                     }
-                    x if x.to_lowercase() == "j" => {
-                        ui.file_view
-                            .down(lines)
-                            .unwrap_or_else(|e| ui.status = format!("{:?}", e));
-                    }
-                    x if x.to_lowercase() == "k" => {
-                        ui.file_view
-                            .up(lines)
-                            .unwrap_or_else(|e| ui.status = format!("{:?}", e));
-                    }
-                    x if x.to_lowercase().ends_with("gg") => {
-                        x.get(..x.len() - 2)
-                            .unwrap()
-                            .parse::<u64>()
-                            .map(|line| ui.file_view.jump_to_line(line))
-                            .ok();
-                    }
-                    x if x.to_lowercase().ends_with("pp") => {
-                        x.get(..x.len() - 2)
-                            .unwrap()
-                            .parse::<f64>()
-                            .map(|percent| {
-                                ui.file_view.jump_to_byte(
-                                    (ui.file_view.file_size() as f64 * percent / 100.0) as u64,
-                                )
-                            })
-                            .ok();
-                    }
+                    x if x.to_lowercase() == "j" => ui.file_view.down(lines),
+                    x if x.to_lowercase() == "k" => ui.file_view.up(lines),
+                    x if x.to_lowercase().ends_with("gg") => x
+                        .get(..x.len() - 2)
+                        .unwrap()
+                        .parse::<u64>()
+                        .map_err(|_| ViewError::from("not a number"))
+                        .and_then(|line| ui.file_view.jump_to_line(line)),
+                    x if x.to_lowercase().ends_with("pp") => x
+                        .get(..x.len() - 2)
+                        .unwrap()
+                        .parse::<f64>()
+                        .map_err(|_| ViewError::from("not a number"))
+                        .map(|percent| {
+                            ui.file_view.jump_to_byte(
+                                (ui.file_view.file_size() as f64 * percent / 100.0) as u64,
+                            )
+                        }),
                     x if x.starts_with("/") && x.ends_with("\n") => {
                         let pattern = x.get(1..x.len() - 1).unwrap_or("");
                         if pattern.is_empty() {
                             ui.search_pattern = None;
                             break;
                         }
-                        ui.search_pattern = Regex::new(pattern).map(|x| Some(x)).unwrap_or(None);
-                        if let Some(re) = ui.search_pattern.as_ref() {
-                            ui.file_view
-                                .down_to_line_matching(&bytes::Regex::new(re.as_str()).unwrap())
-                                .unwrap_or_else(|e| ui.status = format!("{:?}", e));
+                        match (Regex::new(pattern), bytes::Regex::new(pattern)) {
+                            (Ok(unicode_re), Ok(bytes_re)) => {
+                                ui.search_pattern = Some(unicode_re);
+                                ui.file_view.down_to_line_matching(&bytes_re, false)
+                            }
+                            _ => Err(ViewError::from("invalid regex")),
                         }
                     }
-                    _ => done = ui.command.ends_with("\n"),
+                    _ => {
+                        done = ui.command.ends_with("\n");
+                        Ok(())
+                    }
+                };
+
+                if reset {
+                    ui.command.clear();
+                    ui.search_pattern = None;
                 }
 
                 if done {
@@ -213,6 +227,14 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
                     ui.align_bottom = true;
                 } else if ui.file_view.current_line() != line_before {
                     ui.align_bottom = false;
+                }
+
+                match res1.and_then(|_| res2) {
+                    Err(e) => {
+                        ui.set_error(e);
+                        continue;
+                    }
+                    _ => (),
                 }
             }
         }
@@ -249,14 +271,17 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui) {
 
     let text = loop {
         let height: u64 = chunks[1].height.into();
-        let mut text = match ui.file_view.view(height) {
+        let text = match ui.file_view.view(height) {
             Ok(x) => x,
             Err(e) => {
-                ui.status = format!("{:?}", e);
-                ""
+                ui.set_error(e);
+                b""
             }
-        }
-        .to_owned();
+        };
+        let mut text = from_utf8(text)
+            .map(|x| x.to_owned())
+            .unwrap_or_else(|e| format!("invalid utf-8: {:?}", e));
+
         if ui.wrap {
             text = wrap_text(text, chunks[1].width.into());
             if ui.align_bottom
@@ -290,14 +315,17 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui) {
 
     let mut flags = Vec::new();
     if ui.follow {
-        flags.push("Follow")
+        flags.push("Follow".to_owned())
     }
     if ui.wrap {
-        flags.push("Wrap")
+        flags.push("Wrap".to_owned())
+    }
+    if let Some(re) = &ui.search_pattern {
+        flags.push(format!("/{}", re.to_string()));
     }
 
     let header = Text::from(format!(
-        "Line {}, Offset {} ({:.1}%){}\n{}: {}",
+        "Line {}, Offset {} ({:.1}%){}\n{}",
         ui.file_view
             .current_line()
             .map(|x| x.to_string())
@@ -310,14 +338,9 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui) {
             format!(", {}", flags.join(", "))
         },
         if ui.status.is_empty() {
-            "Command"
+            format!("Command: {}", ui.command)
         } else {
-            "Status"
-        },
-        if ui.status.is_empty() {
-            &ui.command
-        } else {
-            &ui.status
+            format!("Status: {}", ui.status)
         },
     ));
 

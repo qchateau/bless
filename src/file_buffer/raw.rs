@@ -1,5 +1,4 @@
-use super::ShrinkResult;
-use num::clamp;
+use super::devec::DeVec;
 use std::{
     cmp::{max, min},
     fs::File,
@@ -10,25 +9,26 @@ use std::{
 
 const BUFFER_SIZE: usize = 0xffff;
 
+#[derive(Debug)]
 pub struct FileBuffer {
-    file: File,
     buffer_offset: u64,
-    buffer: Vec<u8>,
+    buffer: DeVec<u8>,
+    file: File,
 }
 
 impl FileBuffer {
     pub fn new(path: &str) -> Result<Self, io::Error> {
         let file = File::open(path)?;
         return Ok(Self {
-            file,
             buffer_offset: 0,
-            buffer: Vec::new(),
+            buffer: DeVec::new(),
+            file,
         });
     }
 }
 
 impl super::FileBuffer for FileBuffer {
-    fn data(&self) -> &[u8] {
+    fn data(&mut self) -> &[u8] {
         return self.buffer.as_slice();
     }
     fn range(&self) -> Range<u64> {
@@ -44,74 +44,54 @@ impl super::FileBuffer for FileBuffer {
         self.buffer.clear();
         self.buffer_offset = bytes;
     }
-    fn load_prev(&mut self) -> Option<usize> {
-        let shift = min(self.buffer_offset, BUFFER_SIZE as u64);
-        let mut prev_buffer = vec![0u8; shift as usize];
+    fn load_prev(&mut self) -> io::Result<usize> {
+        let try_read_size = min(self.buffer_offset as usize, BUFFER_SIZE);
+        self.buffer.resize_front(try_read_size);
 
-        let read_bytes = loop {
-            if self.buffer_offset == 0 {
-                return None;
-            }
+        let buf = self.buffer.as_mut_slice();
+        let buf = &mut buf[..try_read_size];
 
-            match self.file.read_at(
-                prev_buffer.as_mut_slice(),
-                (self.buffer_offset - shift) as u64,
-            ) {
-                Ok(0) => self.buffer_offset = self.file.metadata().unwrap().len(),
-                Ok(read_size) => break read_size,
-                _ => return None,
-            }
-        };
-        prev_buffer.resize(read_bytes, 0);
+        let read_offset = self.buffer_offset - try_read_size as u64;
+        let read_size_res = self.file.read_at(buf, read_offset);
+        let read_size = *read_size_res.as_ref().unwrap_or(&0);
 
-        prev_buffer.append(&mut self.buffer);
-        self.buffer = prev_buffer;
-        self.buffer_offset -= read_bytes as u64;
-        return Some(read_bytes);
+        let missing_bytes = try_read_size - read_size;
+        buf.rotate_right(missing_bytes);
+        self.buffer.resize_front(self.buffer.len() - missing_bytes);
+
+        self.buffer_offset -= read_size as u64;
+        return read_size_res;
     }
-    fn load_next(&mut self) -> Option<usize> {
-        let mut next_buffer = vec![0u8; BUFFER_SIZE];
-        let read_bytes = match self.file.read_at(
-            next_buffer.as_mut_slice(),
-            (self.buffer_offset + self.buffer.len() as u64)
-                .try_into()
-                .unwrap(),
-        ) {
-            Ok(0) => return None,
-            Ok(read_bytes) => read_bytes,
-            _ => return None,
-        };
-        next_buffer.resize(read_bytes, 0);
+    fn load_next(&mut self) -> std::io::Result<usize> {
+        let size_before = self.buffer.len();
+        let read_offset = self.range().end;
+        self.buffer.resize(size_before + BUFFER_SIZE);
 
-        let read_size = next_buffer.len();
-        self.buffer.append(&mut next_buffer);
-        return Some(read_size);
+        let buf = self.buffer.as_mut_slice();
+        let buf_start = buf.len() - BUFFER_SIZE;
+        let buf = &mut buf[buf_start..];
+
+        let read_size_res = self.file.read_at(buf, read_offset);
+        let read_size = *read_size_res.as_ref().unwrap_or(&0);
+        self.buffer.resize(size_before + read_size);
+        return read_size_res;
     }
-
-    fn shrink_around(&mut self, pos: u64) -> ShrinkResult {
-        let old_buffer_end = self.buffer_offset + self.buffer.len() as u64;
-        let pos = clamp(pos, self.buffer_offset, old_buffer_end);
-
-        let old_buffer_offset = self.buffer_offset;
-        let new_buffer_offset = max(
-            pos.saturating_sub(BUFFER_SIZE as u64 / 2),
-            old_buffer_offset,
-        );
-        let new_buffer_end = min(new_buffer_offset + BUFFER_SIZE as u64, old_buffer_end);
-
-        let removed_before = (new_buffer_offset - old_buffer_offset) as usize;
-        let new_size = (new_buffer_end - new_buffer_offset) as usize;
-
-        self.buffer_offset = new_buffer_offset;
-        self.buffer = self
-            .buffer
-            .get(removed_before..(removed_before + new_size))
-            .unwrap()
-            .to_owned();
-
-        return ShrinkResult {
-            before: removed_before as u64,
-            after: old_buffer_end - new_buffer_end,
+    fn shrink_to(&mut self, range: Range<u64>) {
+        let inter = Range {
+            start: max(self.range().start, range.start),
+            end: min(self.range().end, range.end),
         };
+        if inter.end <= inter.start {
+            self.buffer_offset = inter.start;
+            self.buffer.clear();
+            return;
+        }
+
+        let extra_end = self.range().end.saturating_sub(inter.end) as usize;
+        let extra_start = inter.start.saturating_sub(self.range().start) as usize;
+        self.buffer.resize(self.buffer.len() - extra_end);
+        self.buffer.resize_front(self.buffer.len() - extra_start);
+        self.buffer_offset = inter.start;
+        self.buffer.shrink_to(inter.count());
     }
 }

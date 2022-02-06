@@ -1,6 +1,8 @@
+mod errors;
 mod file_buffer;
 mod file_view;
 mod ui;
+mod utils;
 
 use crate::file_view::BufferedFileView;
 use clap::Parser;
@@ -14,11 +16,7 @@ struct Args {
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
-    let file_view = match args.path {
-        path if path.ends_with(".bz2") => BufferedFileView::new_bzip2(path),
-        path => BufferedFileView::new_plaintext(path),
-    };
-    return match file_view {
+    return match BufferedFileView::new(args.path) {
         Ok(file_view) => ui::run(Box::new(file_view)),
         Err(err) => Err(err),
     };
