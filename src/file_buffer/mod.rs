@@ -5,7 +5,7 @@ pub mod raw;
 use std::{fmt::Debug, io::Result};
 
 pub trait FileBuffer: Debug {
-    fn data(&mut self) -> &[u8];
+    fn data(&self) -> &[u8];
     fn range(&self) -> std::ops::Range<u64>;
     fn total_size(&self) -> u64;
     fn jump(&mut self, bytes: u64);

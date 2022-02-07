@@ -90,7 +90,7 @@ impl FileView for BufferedFileView {
     }
     fn offest(&self) -> u64 {
         let buffer_size = self.buffer.range().count();
-        let data_size = self.buffer.range().count();
+        let data_size = self.buffer.data().len();
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
@@ -189,6 +189,7 @@ impl FileView for BufferedFileView {
         );
 
         while lines > 0 {
+            breaker.it()?;
             match self.current_view().iter().position(|&x| x == b'\n') {
                 Some(pos) => {
                     self.view_offset += pos + 1;

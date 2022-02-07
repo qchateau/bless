@@ -48,21 +48,24 @@ impl FileBuffer {
 
     fn reset_decoder(&mut self) {
         self.decoder = Decompress::new(false);
+        self.decoded.clear();
     }
 
     fn incremental_decode(&mut self) -> io::Result<()> {
         if self.decoder.total_in() == 0 {
-            self.decoded.clear();
             self.decoder
                 .decompress(self.header.as_slice(), &mut self.decoded[0..0])?;
         }
 
         let mut data = lstrip_to_magic(super::FileBuffer::data(&mut self.raw_buffer));
+        let offset = self.decoder.total_in() as usize - self.header.len();
+        data = &data[offset..];
 
         // remove the last char, it's irrelevant in most cases, and we *never*
         // want the decoder to encounter the end of the stream
-        let offset = self.decoder.total_in() as usize - self.header.len();
-        data = data.get(offset..data.len() - 1).unwrap_or(b"");
+        if !data.is_empty() {
+            data = &data[..data.len() - 1];
+        }
 
         loop {
             let before_in = self.decoder.total_in();
@@ -83,7 +86,7 @@ impl FileBuffer {
 }
 
 impl super::FileBuffer for FileBuffer {
-    fn data(&mut self) -> &[u8] {
+    fn data(&self) -> &[u8] {
         return self.decoded.as_slice();
     }
     fn range(&self) -> Range<u64> {
@@ -95,7 +98,6 @@ impl super::FileBuffer for FileBuffer {
     fn jump(&mut self, bytes: u64) {
         self.raw_buffer.jump(bytes);
         self.reset_decoder();
-        self.decoded.clear();
     }
     fn load_prev(&mut self) -> std::io::Result<usize> {
         let size_before = self.decoded.len();

@@ -28,7 +28,7 @@ impl FileBuffer {
 }
 
 impl super::FileBuffer for FileBuffer {
-    fn data(&mut self) -> &[u8] {
+    fn data(&self) -> &[u8] {
         return self.buffer.as_slice();
     }
     fn range(&self) -> Range<u64> {
@@ -46,7 +46,7 @@ impl super::FileBuffer for FileBuffer {
     }
     fn load_prev(&mut self) -> io::Result<usize> {
         let try_read_size = min(self.buffer_offset as usize, BUFFER_SIZE);
-        self.buffer.resize_front(try_read_size);
+        self.buffer.resize_front(self.buffer.len() + try_read_size);
 
         let buf = self.buffer.as_mut_slice();
         let buf = &mut buf[..try_read_size];

@@ -246,6 +246,7 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
 }
 
 fn wrap_text(text: String, width: usize) -> String {
+    assert!(width > 0);
     let mut lines = Vec::new();
     for mut line in text.lines() {
         while line.len() > width {
@@ -284,11 +285,11 @@ fn refresh<B: Backend>(f: &mut Frame<B>, ui: &mut Ui) {
 
         if ui.wrap {
             text = wrap_text(text, chunks[1].width.into());
-            if ui.align_bottom
-                && text.lines().count() > height as usize
-                && ui.file_view.down(1).is_ok()
-            {
-                continue;
+            if ui.align_bottom && text.lines().count() > height as usize {
+                match ui.file_view.down(1) {
+                    Ok(_) => continue,
+                    Err(e) => ui.set_error(e),
+                }
             }
         }
         break text;
