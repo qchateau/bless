@@ -54,14 +54,16 @@ impl BufferedFileView {
         self.view_offset = 0;
     }
     fn load_next(&mut self) -> io::Result<usize> {
-        let res = self.buffer.load_next()?;
+        let load_size = self.buffer.load_next()?;
         self.maybe_shrink();
-        return Ok(res);
+        eprintln!("loaded {} next bytes", load_size);
+        return Ok(load_size);
     }
     fn load_prev(&mut self) -> io::Result<usize> {
         let load_size = self.buffer.load_prev()?;
         self.view_offset += load_size;
         self.maybe_shrink();
+        eprintln!("loaded {} previous bytes", load_size);
         return Ok(load_size);
     }
     fn save_state(&self) -> ViewState {
@@ -95,11 +97,7 @@ impl FileView for BufferedFileView {
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
     fn view(&mut self, nlines: u64) -> Result<&[u8], ViewError> {
-        let mut breaker = InfiniteLoopBreaker::new(
-            10,
-            ViewError::from("exceeded max number of iterations building the current view"),
-        );
-
+        eprintln!("building view for {} lines", nlines);
         while !self
             .current_view()
             .iter()
@@ -107,7 +105,6 @@ impl FileView for BufferedFileView {
             .nth(nlines as usize - 1)
             .is_some()
         {
-            breaker.it()?;
             match self.load_next() {
                 Ok(0) => break,
                 Ok(_) => (),
@@ -122,6 +119,7 @@ impl FileView for BufferedFileView {
             ViewError::from("exceeded max number of iterations trying to go up"),
         );
 
+        eprintln!("up {}", lines);
         while lines > 0 {
             breaker.it()?;
             let view = self.above_view();
@@ -154,6 +152,8 @@ impl FileView for BufferedFileView {
         return Ok(());
     }
     fn up_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError> {
+        eprintln!("up to line matching {}", regex.as_str());
+
         let state = self.save_state();
 
         loop {
@@ -188,6 +188,7 @@ impl FileView for BufferedFileView {
             ViewError::from("exceeded max number of iterations trying to go down"),
         );
 
+        eprintln!("down {}", lines);
         while lines > 0 {
             breaker.it()?;
             match self.current_view().iter().position(|&x| x == b'\n') {
@@ -211,6 +212,8 @@ impl FileView for BufferedFileView {
         regex: &Regex,
         skip_current: bool,
     ) -> Result<(), ViewError> {
+        eprintln!("down to line matching {}", regex.as_str());
+
         let state = self.save_state();
         if skip_current {
             self.down(1).ok();
@@ -243,6 +246,8 @@ impl FileView for BufferedFileView {
         }
     }
     fn jump_to_line(&mut self, line: u64) -> Result<(), ViewError> {
+        eprintln!("jump to line {}", line);
+
         if self.current_line.is_none() {
             self.top()
         }
@@ -255,15 +260,21 @@ impl FileView for BufferedFileView {
         };
     }
     fn jump_to_byte(&mut self, bytes: u64) {
+        eprintln!("jump to byte {}", bytes);
+
         self.buffer.jump(bytes);
         self.view_offset = 0;
         self.current_line = None;
         self.up(1).ok();
     }
     fn top(&mut self) {
+        eprintln!("jump to top");
+
         self.jump_to_byte(0);
     }
     fn bottom(&mut self) {
+        eprintln!("jump to bottom");
+
         self.buffer.jump(self.buffer.total_size() - 1);
         self.view_offset = 0;
         self.current_line = Some(0);

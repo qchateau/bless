@@ -61,7 +61,7 @@ pub fn run(file_view: Box<dyn FileView>) -> io::Result<()> {
 
     let default_panic = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {
-        restore_terminal().unwrap_or_else(|err| println!("Error restoring terminal: {:?}", err));
+        restore_terminal().unwrap_or_else(|err| eprintln!("Error restoring terminal: {:?}", err));
         default_panic(panic_info);
     }));
 

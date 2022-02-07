@@ -5,6 +5,7 @@ use std::{fmt, fs::File, io, io::Read, ops::Range};
 
 const BLOCK_MAGIC: &'static [u8] = &[0x31, 0x41, 0x59, 0x26, 0x53, 0x59];
 const BUFFER_SIZE: usize = 0xffff;
+const BACKWARD_LOAD_SIZE: usize = 900_000; // One bzip block
 
 fn lstrip_to_magic(mut data: &[u8]) -> &[u8] {
     while !data.is_empty() && !data.starts_with(BLOCK_MAGIC) {
@@ -67,6 +68,7 @@ impl FileBuffer {
             data = &data[..data.len() - 1];
         }
 
+        eprintln!("decoding {} bytes", data.len());
         loop {
             let before_in = self.decoder.total_in();
             let before_out = self.decoder.total_out();
@@ -102,10 +104,22 @@ impl super::FileBuffer for FileBuffer {
     fn load_prev(&mut self) -> std::io::Result<usize> {
         let size_before = self.decoded.len();
         while self.decoded.len() <= size_before {
-            if self.raw_buffer.load_prev()? == 0 {
-                return Ok(0);
-            }
             self.reset_decoder();
+
+            let mut loaded = 0;
+            while loaded < BACKWARD_LOAD_SIZE {
+                // go back at least one block size, otherwise
+                // we'll keep resetting the decoder
+                loaded += match self.raw_buffer.load_prev()? {
+                    0 => {
+                        // We reached the beginning, bail out no matter what
+                        self.incremental_decode()?;
+                        return Ok(self.decoded.len() - size_before);
+                    }
+                    x => x,
+                };
+            }
+
             self.incremental_decode()?;
         }
         return Ok(self.decoded.len() - size_before);
