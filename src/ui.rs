@@ -5,7 +5,7 @@ use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 use std::{fmt::Display, io, str::from_utf8, time::Duration};
 use tui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Span, Spans, Text},
     widgets::{Block, Borders, Paragraph},
@@ -14,14 +14,18 @@ use tui::{
 
 use crate::{errors::ViewError, file_view::FileView, utils::wrap_text};
 
+const FAST_SCROLL_LINES: u64 = 5;
+
 pub struct Ui {
     file_view: Box<dyn FileView>,
     command: String,
     status: String,
     search_pattern: Option<Regex>,
+    search_pattern_bytes: Option<bytes::Regex>,
     wrap: bool,
     align_bottom: bool,
     follow: bool,
+    stop: bool,
 }
 
 impl Ui {
@@ -31,10 +35,172 @@ impl Ui {
             command: String::new(),
             status: String::new(),
             search_pattern: None,
+            search_pattern_bytes: None,
             wrap: true,
             align_bottom: false,
             follow: false,
+            stop: false,
         };
+    }
+
+    fn handle_key(&mut self, term_size: &Rect, key: KeyEvent) -> Result<(), ViewError> {
+        match key {
+            KeyEvent {
+                modifiers: KeyModifiers::CONTROL,
+                code: KeyCode::Char('c'),
+            } => {
+                if self.command.is_empty() && self.search_pattern.is_none() {
+                    self.stop = true;
+                } else {
+                    self.command.clear();
+                    self.reset_search_patterns()
+                }
+            }
+            KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            } => self.command.push(c),
+            KeyEvent {
+                code: KeyCode::Down,
+                modifiers: KeyModifiers::SHIFT,
+            } => self.file_view.down(FAST_SCROLL_LINES)?,
+            KeyEvent {
+                code: KeyCode::Down,
+                ..
+            } => self.file_view.down(1)?,
+            KeyEvent {
+                code: KeyCode::Up,
+                modifiers: KeyModifiers::SHIFT,
+            } => self.file_view.up(FAST_SCROLL_LINES)?,
+            KeyEvent {
+                code: KeyCode::Up, ..
+            } => self.file_view.up(1)?,
+            KeyEvent {
+                code: KeyCode::PageDown,
+                ..
+            } => self.file_view.down(term_size.height.into())?,
+            KeyEvent {
+                code: KeyCode::PageUp,
+                ..
+            } => self.file_view.up(term_size.height.into())?,
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                self.command.clear();
+                self.reset_search_patterns()
+            }
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            } => self.command.push('\n'),
+            KeyEvent {
+                code: KeyCode::Backspace,
+                ..
+            } => {
+                self.command.pop();
+            }
+            _ => (),
+        };
+        Ok(())
+    }
+
+    fn handle_command(&mut self, term_size: &Rect) -> Result<(), ViewError> {
+        let line_before = self.file_view.current_line();
+        let mut align_bottom = false;
+        let mut done = true;
+        let command = self.command.as_str().to_owned();
+
+        let res = match command.as_str() {
+            "q" => {
+                self.stop = true;
+                Ok(())
+            }
+            "w" => {
+                self.wrap = !self.wrap;
+                Ok(())
+            }
+            "f" => {
+                self.follow = !self.follow;
+                Ok(())
+            }
+            "n" => {
+                if let Some(re) = self.search_pattern_bytes.as_ref() {
+                    self.file_view.down_to_line_matching(re, true)
+                } else {
+                    Err(ViewError::from("nothing to search"))
+                }
+            }
+            "N" => {
+                if let Some(re) = self.search_pattern_bytes.as_ref() {
+                    self.file_view.up_to_line_matching(re)
+                } else {
+                    Err(ViewError::from("nothing to search"))
+                }
+            }
+            "gg" => {
+                self.file_view.top();
+                Ok(())
+            }
+            "GG" => {
+                align_bottom = true;
+                self.file_view.bottom();
+                self.file_view.up(term_size.height.into())
+            }
+            "j" => self.file_view.down(1),
+            "J" => self.file_view.down(FAST_SCROLL_LINES),
+            "k" => self.file_view.up(1),
+            "K" => self.file_view.up(FAST_SCROLL_LINES),
+            x if x.to_lowercase().ends_with("gg") => x
+                .get(..x.len() - 2)
+                .unwrap()
+                .parse::<u64>()
+                .map_err(|_| ViewError::from("not a number"))
+                .and_then(|line| self.file_view.jump_to_line(line)),
+            x if x.to_lowercase().ends_with("pp") => x
+                .get(..x.len() - 2)
+                .unwrap()
+                .parse::<f64>()
+                .map_err(|_| ViewError::from("not a number"))
+                .map(|percent| {
+                    self.file_view
+                        .jump_to_byte((self.file_view.file_size() as f64 * percent / 100.0) as u64)
+                }),
+            x if x.starts_with("/") && x.ends_with("\n") => {
+                let pattern = x.get(1..x.len() - 1).unwrap_or("");
+                if pattern.is_empty() {
+                    self.reset_search_patterns();
+                    Ok(())
+                } else {
+                    match (Regex::new(pattern), bytes::Regex::new(pattern)) {
+                        (Ok(unicode_re), Ok(bytes_re)) => {
+                            self.search_pattern = Some(unicode_re);
+                            self.search_pattern_bytes = Some(bytes_re);
+                            self.file_view.down_to_line_matching(
+                                self.search_pattern_bytes.as_ref().unwrap(),
+                                false,
+                            )
+                        }
+                        _ => Err(ViewError::from("invalid regex")),
+                    }
+                }
+            }
+            _ => {
+                done = self.command.ends_with("\n");
+                Ok(())
+            }
+        };
+
+        if done {
+            self.command.clear();
+        }
+
+        if align_bottom {
+            self.align_bottom = true;
+        } else if self.file_view.current_line() != line_before {
+            self.align_bottom = false;
+        }
+
+        return res;
     }
 
     pub fn run(&mut self) -> io::Result<()> {
@@ -42,7 +208,7 @@ impl Ui {
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
-        loop {
+        while !self.stop {
             for sig in wait_signal.pending() {
                 eprintln!("received singal {}", sig);
                 return Ok(());
@@ -52,171 +218,11 @@ impl Ui {
 
             if crossterm::event::poll(Duration::from_millis(500))? {
                 if let Event::Key(key) = event::read()? {
+                    let term_size = terminal.size()?;
                     self.status.clear();
-                    let line_before = self.file_view.current_line();
-                    let mut align_bottom = false;
-                    let mut reset = false;
-                    let term_size = terminal.size().unwrap();
-                    let lines = match key.modifiers {
-                        KeyModifiers::SHIFT => 5,
-                        _ => 1,
-                    };
-
-                    let res1 = match key {
-                        KeyEvent {
-                            modifiers: KeyModifiers::CONTROL,
-                            code: KeyCode::Char('c'),
-                        } => {
-                            if self.command.is_empty() {
-                                break;
-                            } else {
-                                reset = true;
-                            }
-                            Ok(())
-                        }
-                        KeyEvent {
-                            code: KeyCode::Char(c),
-                            ..
-                        } => {
-                            self.command.push(c);
-                            Ok(())
-                        }
-                        KeyEvent {
-                            code: KeyCode::Down,
-                            ..
-                        } => self.file_view.down(lines),
-                        KeyEvent {
-                            code: KeyCode::Up, ..
-                        } => self.file_view.up(lines),
-                        KeyEvent {
-                            code: KeyCode::PageDown,
-                            ..
-                        } => self.file_view.down(term_size.height.into()),
-                        KeyEvent {
-                            code: KeyCode::PageUp,
-                            ..
-                        } => self.file_view.up(term_size.height.into()),
-                        KeyEvent {
-                            code: KeyCode::Esc, ..
-                        } => {
-                            reset = true;
-                            Ok(())
-                        }
-                        KeyEvent {
-                            code: KeyCode::Enter,
-                            ..
-                        } => {
-                            self.command.push('\n');
-                            Ok(())
-                        }
-                        KeyEvent {
-                            code: KeyCode::Backspace,
-                            ..
-                        } => {
-                            self.command.pop();
-                            Ok(())
-                        }
-                        _ => Ok(()),
-                    };
-
-                    let mut done = true;
-                    let res2 = match self.command.as_str() {
-                        "q" => break,
-                        "w" => {
-                            self.wrap = !self.wrap;
-                            Ok(())
-                        }
-                        "f" => {
-                            self.follow = !self.follow;
-                            Ok(())
-                        }
-                        "n" => {
-                            if let Some(re) = self.search_pattern.as_ref() {
-                                self.file_view.down_to_line_matching(
-                                    &bytes::Regex::new(re.as_str()).unwrap(),
-                                    true,
-                                )
-                            } else {
-                                Err(ViewError::from("nothing to search"))
-                            }
-                        }
-                        "N" => {
-                            if let Some(re) = self.search_pattern.as_ref() {
-                                self.file_view
-                                    .up_to_line_matching(&bytes::Regex::new(re.as_str()).unwrap())
-                            } else {
-                                Err(ViewError::from("nothing to search"))
-                            }
-                        }
-                        "gg" => {
-                            self.file_view.top();
-                            Ok(())
-                        }
-                        "GG" => {
-                            align_bottom = true;
-                            self.file_view.bottom();
-                            self.file_view.up(term_size.height.into())
-                        }
-                        x if x.to_lowercase() == "j" => self.file_view.down(lines),
-                        x if x.to_lowercase() == "k" => self.file_view.up(lines),
-                        x if x.to_lowercase().ends_with("gg") => x
-                            .get(..x.len() - 2)
-                            .unwrap()
-                            .parse::<u64>()
-                            .map_err(|_| ViewError::from("not a number"))
-                            .and_then(|line| self.file_view.jump_to_line(line)),
-                        x if x.to_lowercase().ends_with("pp") => x
-                            .get(..x.len() - 2)
-                            .unwrap()
-                            .parse::<f64>()
-                            .map_err(|_| ViewError::from("not a number"))
-                            .map(|percent| {
-                                self.file_view.jump_to_byte(
-                                    (self.file_view.file_size() as f64 * percent / 100.0) as u64,
-                                )
-                            }),
-                        x if x.starts_with("/") && x.ends_with("\n") => {
-                            let pattern = x.get(1..x.len() - 1).unwrap_or("");
-                            if pattern.is_empty() {
-                                self.search_pattern = None;
-                                break;
-                            }
-                            match (Regex::new(pattern), bytes::Regex::new(pattern)) {
-                                (Ok(unicode_re), Ok(bytes_re)) => {
-                                    self.search_pattern = Some(unicode_re);
-                                    self.file_view.down_to_line_matching(&bytes_re, false)
-                                }
-                                _ => Err(ViewError::from("invalid regex")),
-                            }
-                        }
-                        _ => {
-                            done = self.command.ends_with("\n");
-                            Ok(())
-                        }
-                    };
-
-                    if reset {
-                        self.command.clear();
-                        self.search_pattern = None;
-                    }
-
-                    if done {
-                        self.command.clear()
-                    }
-
-                    if align_bottom {
-                        self.align_bottom = true;
-                    } else if self.file_view.current_line() != line_before {
-                        self.align_bottom = false;
-                    }
-
-                    match res1.and_then(|_| res2) {
-                        Err(e) => {
-                            self.set_error(e);
-                            continue;
-                        }
-                        _ => (),
-                    }
+                    self.handle_key(&term_size, key)
+                        .and_then(|_| self.handle_command(&term_size))
+                        .unwrap_or_else(|e| self.set_error(e));
                 }
             }
         }
@@ -330,6 +336,11 @@ impl Ui {
             .block(Block::default())
             .alignment(Alignment::Left);
         f.render_widget(paragraph, chunks[1]);
+    }
+
+    fn reset_search_patterns(&mut self) {
+        self.search_pattern = None;
+        self.search_pattern_bytes = None;
     }
 
     fn set_error<D: Display>(&mut self, e: D) {
