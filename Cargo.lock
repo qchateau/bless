@@ -51,6 +51,7 @@ dependencies = [
  "gag",
  "human_bytes",
  "regex",
+ "signal-hook",
  "tui",
 ]
 

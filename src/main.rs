@@ -1,13 +1,16 @@
 mod errors;
 mod file_buffer;
 mod file_view;
+mod term;
 mod ui;
 mod utils;
 
-use crate::file_view::BufferedFileView;
+use crate::{file_view::BufferedFileView, term::ConfigureTerm, ui::Ui};
 use clap::Parser;
-use gag::Redirect;
-use std::{fs, io};
+use std::{
+    io, panic,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Parser)]
 struct Args {
@@ -17,24 +20,20 @@ struct Args {
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
-    let _redirect_stderr = if atty::is(atty::Stream::Stderr) {
-        Some(
-            Redirect::stderr(
-                fs::OpenOptions::new()
-                    .truncate(true)
-                    .read(true)
-                    .create(true)
-                    .write(true)
-                    .open("/dev/null")
-                    .unwrap(),
-            )
-            .unwrap(),
-        )
-    } else {
-        None
-    };
-    return match BufferedFileView::new(args.path) {
-        Ok(file_view) => ui::run(Box::new(file_view)),
-        Err(err) => Err(err),
-    };
+
+    let view = BufferedFileView::new(args.path)?;
+    let mut ui = Ui::new(Box::new(view));
+    let term = Arc::new(Mutex::new(Some(ConfigureTerm::new()?)));
+    let term_copy = term.clone();
+
+    let default_panic = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        term_copy.lock().unwrap().take().unwrap();
+        default_panic(panic_info);
+    }));
+
+    let res = ui.run();
+    term.lock().unwrap().as_mut().unwrap().cleanup();
+
+    return res;
 }

@@ -10,5 +10,6 @@ bzip2 = "0.4"
 regex = "1"
 gag = "1.0.0"
 atty = "0.2.14"
+signal-hook = "0.3.13"
 clap = { version = "3.0.14", features = ["derive"] }
 human_bytes = { version = "0.3", features = ["fast"] }

@@ -26,3 +26,16 @@ impl<T: Clone + Display> InfiniteLoopBreaker<T> {
         return Ok(());
     }
 }
+
+pub fn wrap_text(text: String, width: usize) -> String {
+    assert!(width > 0);
+    let mut lines = Vec::new();
+    for mut line in text.lines() {
+        while line.len() > width {
+            lines.push(line.get(..width).unwrap());
+            line = &line[width..];
+        }
+        lines.push(line);
+    }
+    return lines.join("\n");
+}
