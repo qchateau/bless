@@ -16,12 +16,25 @@ use crate::{errors::ViewError, file_view::FileView, utils::wrap_text};
 
 const FAST_SCROLL_LINES: u64 = 5;
 
+struct BiRegex {
+    str: Regex,
+    bytes: bytes::Regex,
+}
+
+impl BiRegex {
+    fn new(pattern: &str) -> Result<Self, ViewError> {
+        return Ok(Self {
+            str: Regex::new(pattern).map_err(|_| ViewError::from("invalid regex"))?,
+            bytes: bytes::Regex::new(pattern).map_err(|_| ViewError::from("invalid regex"))?,
+        });
+    }
+}
+
 pub struct Ui {
     file_view: Box<dyn FileView>,
     command: String,
     status: String,
-    search_pattern: Option<Regex>,
-    search_pattern_bytes: Option<bytes::Regex>,
+    search_pattern: Option<BiRegex>,
     wrap: bool,
     align_bottom: bool,
     follow: bool,
@@ -35,7 +48,6 @@ impl Ui {
             command: String::new(),
             status: String::new(),
             search_pattern: None,
-            search_pattern_bytes: None,
             wrap: true,
             align_bottom: false,
             follow: false,
@@ -53,7 +65,7 @@ impl Ui {
                     self.stop = true;
                 } else {
                     self.command.clear();
-                    self.reset_search_patterns()
+                    self.search_pattern = None;
                 }
             }
             KeyEvent {
@@ -87,7 +99,7 @@ impl Ui {
                 code: KeyCode::Esc, ..
             } => {
                 self.command.clear();
-                self.reset_search_patterns()
+                self.search_pattern = None;
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -124,15 +136,15 @@ impl Ui {
                 Ok(())
             }
             "n" => {
-                if let Some(re) = self.search_pattern_bytes.as_ref() {
-                    self.file_view.down_to_line_matching(re, true)
+                if let Some(re) = self.search_pattern.as_ref() {
+                    self.file_view.down_to_line_matching(&re.bytes, true)
                 } else {
                     Err(ViewError::from("nothing to search"))
                 }
             }
             "N" => {
-                if let Some(re) = self.search_pattern_bytes.as_ref() {
-                    self.file_view.up_to_line_matching(re)
+                if let Some(re) = self.search_pattern.as_ref() {
+                    self.file_view.up_to_line_matching(&re.bytes)
                 } else {
                     Err(ViewError::from("nothing to search"))
                 }
@@ -168,20 +180,16 @@ impl Ui {
             x if x.starts_with("/") && x.ends_with("\n") => {
                 let pattern = x.get(1..x.len() - 1).unwrap_or("");
                 if pattern.is_empty() {
-                    self.reset_search_patterns();
+                    self.search_pattern = None;
                     Ok(())
                 } else {
-                    match (Regex::new(pattern), bytes::Regex::new(pattern)) {
-                        (Ok(unicode_re), Ok(bytes_re)) => {
-                            self.search_pattern = Some(unicode_re);
-                            self.search_pattern_bytes = Some(bytes_re);
-                            self.file_view.down_to_line_matching(
-                                self.search_pattern_bytes.as_ref().unwrap(),
-                                false,
-                            )
-                        }
-                        _ => Err(ViewError::from("invalid regex")),
-                    }
+                    BiRegex::new(pattern).and_then(|re| {
+                        self.search_pattern = Some(re);
+                        self.file_view.down_to_line_matching(
+                            &self.search_pattern.as_ref().unwrap().bytes,
+                            false,
+                        )
+                    })
                 }
             }
             _ => {
@@ -273,7 +281,7 @@ impl Ui {
                 let mut lines = Vec::new();
                 for mut line in text.lines() {
                     let mut spans = Vec::new();
-                    while let Some(m) = re.find(line) {
+                    while let Some(m) = re.str.find(line) {
                         let before = &line[..m.start()];
                         spans.push(Span::raw(before));
                         spans.push(Span::styled(m.as_str(), match_style));
@@ -294,7 +302,7 @@ impl Ui {
             flags.push("Wrap".to_owned())
         }
         if let Some(re) = &self.search_pattern {
-            flags.push(format!("/{}", re.to_string()));
+            flags.push(format!("/{}", re.str.to_string()));
         }
 
         let header = Text::from(format!(
@@ -336,11 +344,6 @@ impl Ui {
             .block(Block::default())
             .alignment(Alignment::Left);
         f.render_widget(paragraph, chunks[1]);
-    }
-
-    fn reset_search_patterns(&mut self) {
-        self.search_pattern = None;
-        self.search_pattern_bytes = None;
     }
 
     fn set_error<D: Display>(&mut self, e: D) {
