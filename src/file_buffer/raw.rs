@@ -1,10 +1,13 @@
 use super::devec::DeVec;
+use async_trait::async_trait;
 use std::{
     cmp::{max, min},
-    fs::File,
     io,
     ops::Range,
-    os::unix::fs::FileExt,
+};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
 };
 
 const BUFFER_SIZE: usize = 0xffff;
@@ -17,8 +20,8 @@ pub struct FileBuffer {
 }
 
 impl FileBuffer {
-    pub fn new(path: &str) -> Result<Self, io::Error> {
-        let file = File::open(path)?;
+    pub async fn new(path: &str) -> Result<Self, io::Error> {
+        let file = File::open(path).await?;
         return Ok(Self {
             buffer_offset: 0,
             buffer: DeVec::new(),
@@ -27,6 +30,7 @@ impl FileBuffer {
     }
 }
 
+#[async_trait]
 impl super::FileBuffer for FileBuffer {
     fn data(&self) -> &[u8] {
         return self.buffer.as_slice();
@@ -37,14 +41,14 @@ impl super::FileBuffer for FileBuffer {
             end: self.buffer_offset + self.buffer.len() as u64,
         };
     }
-    fn total_size(&self) -> u64 {
-        return self.file.metadata().unwrap().len();
-    }
     fn jump(&mut self, bytes: u64) {
         self.buffer.clear();
         self.buffer_offset = bytes;
     }
-    fn load_prev(&mut self) -> io::Result<usize> {
+    async fn total_size(&self) -> u64 {
+        return self.file.metadata().await.unwrap().len();
+    }
+    async fn load_prev(&mut self) -> io::Result<usize> {
         let try_read_size = min(self.buffer_offset as usize, BUFFER_SIZE);
         self.buffer.resize_front(self.buffer.len() + try_read_size);
 
@@ -52,7 +56,11 @@ impl super::FileBuffer for FileBuffer {
         let buf = &mut buf[..try_read_size];
 
         let read_offset = self.buffer_offset - try_read_size as u64;
-        let read_size_res = self.file.read_at(buf, read_offset);
+
+        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)).await {
+            Ok(_) => self.file.read(buf).await,
+            Err(e) => Err(e),
+        };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
 
         let missing_bytes = try_read_size - read_size;
@@ -62,7 +70,7 @@ impl super::FileBuffer for FileBuffer {
         self.buffer_offset -= read_size as u64;
         return read_size_res;
     }
-    fn load_next(&mut self) -> std::io::Result<usize> {
+    async fn load_next(&mut self) -> std::io::Result<usize> {
         let size_before = self.buffer.len();
         let read_offset = self.range().end;
         self.buffer.resize(size_before + BUFFER_SIZE);
@@ -71,7 +79,10 @@ impl super::FileBuffer for FileBuffer {
         let buf_start = buf.len() - BUFFER_SIZE;
         let buf = &mut buf[buf_start..];
 
-        let read_size_res = self.file.read_at(buf, read_offset);
+        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)).await {
+            Ok(_) => self.file.read(buf).await,
+            Err(e) => Err(e),
+        };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
         self.buffer.resize(size_before + read_size);
         return read_size_res;

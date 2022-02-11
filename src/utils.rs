@@ -28,7 +28,9 @@ impl<T: Clone + Display> InfiniteLoopBreaker<T> {
 }
 
 pub fn wrap_text(text: String, width: usize) -> String {
-    assert!(width > 0);
+    if width <= 0 {
+        return "".to_owned();
+    }
     let mut lines = Vec::new();
     for mut line in text.lines() {
         while line.len() > width {

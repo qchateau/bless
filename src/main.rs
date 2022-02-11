@@ -5,7 +5,7 @@ mod term;
 mod ui;
 mod utils;
 
-use crate::{file_view::BufferedFileView, term::ConfigureTerm, ui::Ui};
+use crate::{file_view::FileView, term::ConfigureTerm, ui::Ui};
 use clap::Parser;
 use std::{
     io, panic,
@@ -18,11 +18,9 @@ struct Args {
     path: String,
 }
 
-fn main() -> io::Result<()> {
+#[tokio::main]
+async fn main() -> io::Result<()> {
     let args = Args::parse();
-
-    let view = BufferedFileView::new(args.path)?;
-    let mut ui = Ui::new(Box::new(view));
     let term = Arc::new(Mutex::new(Some(ConfigureTerm::new()?)));
     let term_copy = term.clone();
 
@@ -32,8 +30,8 @@ fn main() -> io::Result<()> {
         default_panic(panic_info);
     }));
 
-    let res = ui.run();
+    let mut ui = Ui::new(FileView::new(args.path).await?)?;
+    let res = ui.run().await;
     term.lock().unwrap().as_mut().unwrap().cleanup();
-
     return res;
 }

@@ -1,4 +1,5 @@
 use super::raw;
+use async_trait::async_trait;
 use bzip2::Decompress;
 use regex::bytes::Regex;
 use std::{fmt, fs::File, io, io::Read, ops::Range};
@@ -32,12 +33,12 @@ impl fmt::Debug for FileBuffer {
 }
 
 impl FileBuffer {
-    pub fn new(path: &str) -> Result<Self, io::Error> {
+    pub async fn new(path: &str) -> Result<Self, io::Error> {
         let mut file = File::open(path)?;
         let mut header = vec![0u8; 4];
         file.read_exact(header.as_mut_slice()).unwrap();
         return Ok(Self {
-            raw_buffer: raw::FileBuffer::new(path)?,
+            raw_buffer: raw::FileBuffer::new(path).await?,
             header,
             decoded: Vec::new(),
             decoder: Decompress::new(false),
@@ -48,12 +49,14 @@ impl FileBuffer {
     }
 
     fn reset_decoder(&mut self) {
+        eprintln!("resetting decoder");
         self.decoder = Decompress::new(false);
         self.decoded.clear();
     }
 
     fn incremental_decode(&mut self) -> io::Result<()> {
         if self.decoder.total_in() == 0 {
+            eprintln!("initializing decoder");
             self.decoder
                 .decompress(self.header.as_slice(), &mut self.decoded[0..0])?;
         }
@@ -87,6 +90,7 @@ impl FileBuffer {
     }
 }
 
+#[async_trait]
 impl super::FileBuffer for FileBuffer {
     fn data(&self) -> &[u8] {
         return self.decoded.as_slice();
@@ -94,14 +98,15 @@ impl super::FileBuffer for FileBuffer {
     fn range(&self) -> Range<u64> {
         return self.raw_buffer.range();
     }
-    fn total_size(&self) -> u64 {
-        return self.raw_buffer.total_size();
-    }
     fn jump(&mut self, bytes: u64) {
         self.raw_buffer.jump(bytes);
         self.reset_decoder();
     }
-    fn load_prev(&mut self) -> std::io::Result<usize> {
+    async fn total_size(&self) -> u64 {
+        return self.raw_buffer.total_size().await;
+    }
+    async fn load_prev(&mut self) -> std::io::Result<usize> {
+        eprintln!("load previous");
         let size_before = self.decoded.len();
         while self.decoded.len() <= size_before {
             self.reset_decoder();
@@ -110,7 +115,7 @@ impl super::FileBuffer for FileBuffer {
             while loaded < BACKWARD_LOAD_SIZE {
                 // go back at least one block size, otherwise
                 // we'll keep resetting the decoder
-                loaded += match self.raw_buffer.load_prev()? {
+                loaded += match self.raw_buffer.load_prev().await? {
                     0 => {
                         // We reached the beginning, bail out no matter what
                         self.incremental_decode()?;
@@ -124,10 +129,11 @@ impl super::FileBuffer for FileBuffer {
         }
         return Ok(self.decoded.len() - size_before);
     }
-    fn load_next(&mut self) -> std::io::Result<usize> {
+    async fn load_next(&mut self) -> std::io::Result<usize> {
+        eprintln!("load next");
         let size_before = self.decoded.len();
         while self.decoded.len() <= size_before {
-            if self.raw_buffer.load_next()? == 0 {
+            if self.raw_buffer.load_next().await? == 0 {
                 return Ok(0);
             }
             self.incremental_decode()?;

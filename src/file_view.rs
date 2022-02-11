@@ -1,7 +1,6 @@
 use crate::{
     errors::ViewError,
     file_buffer::{make_file_buffer, FileBuffer},
-    file_view::FileView,
     utils::InfiniteLoopBreaker,
 };
 use regex::bytes::Regex;
@@ -19,16 +18,16 @@ struct ViewState {
 }
 
 #[derive(Debug)]
-pub struct BufferedFileView {
+pub struct FileView {
     file_path: String,
     buffer: Box<dyn FileBuffer>,
     view_offset: usize,
     current_line: Option<i64>,
 }
 
-impl BufferedFileView {
-    pub fn new(path: String) -> Result<Self, io::Error> {
-        let buffer = make_file_buffer(&path)?;
+impl FileView {
+    pub async fn new(path: String) -> Result<Self, io::Error> {
+        let buffer = make_file_buffer(&path).await?;
         return Ok(Self {
             file_path: path,
             buffer: Box::from(buffer),
@@ -36,76 +35,31 @@ impl BufferedFileView {
             current_line: Some(0),
         });
     }
-    fn current_view(&mut self) -> &[u8] {
-        return self.buffer.data().get(self.view_offset..).unwrap_or(b"");
+    pub async fn file_size(&self) -> u64 {
+        return self.buffer.total_size().await;
     }
-    fn above_view(&mut self) -> &[u8] {
-        return self.buffer.data().get(..self.view_offset).unwrap_or(b"");
-    }
-    fn maybe_shrink(&mut self) {
-        if self.buffer.range().count() > MAYBE_SHRINK_THRESHOLD {
-            self.shrink()
-        }
-    }
-    fn shrink(&mut self) {
-        let start = self.view_offset as u64 + self.buffer.range().start;
-        let end = start + SHRINK_BUFFER_SIZE as u64;
-        self.buffer.shrink_to(Range { start, end });
-        self.view_offset = 0;
-    }
-    fn load_next(&mut self) -> io::Result<usize> {
-        let load_size = self.buffer.load_next()?;
-        self.maybe_shrink();
-        eprintln!("loaded {} next bytes", load_size);
-        return Ok(load_size);
-    }
-    fn load_prev(&mut self) -> io::Result<usize> {
-        let load_size = self.buffer.load_prev()?;
-        self.view_offset += load_size;
-        self.maybe_shrink();
-        eprintln!("loaded {} previous bytes", load_size);
-        return Ok(load_size);
-    }
-    fn save_state(&self) -> ViewState {
-        return ViewState {
-            view_offset: self.view_offset,
-            current_line: self.current_line,
-            buffer_pos: self.buffer.range().start,
-        };
-    }
-    fn load_state(&mut self, state: &ViewState) {
-        self.view_offset = state.view_offset;
-        self.current_line = state.current_line;
-        self.buffer.jump(state.buffer_pos);
-    }
-}
-
-impl FileView for BufferedFileView {
-    fn file_size(&self) -> u64 {
-        return self.buffer.total_size();
-    }
-    fn file_path(&self) -> &str {
+    pub fn file_path(&self) -> &str {
         return self.file_path.as_str();
     }
-    fn current_line(&self) -> Option<i64> {
+    pub fn current_line(&self) -> Option<i64> {
         return self.current_line;
     }
-    fn offest(&self) -> u64 {
+    pub fn offset(&self) -> u64 {
         let buffer_size = self.buffer.range().count();
         let data_size = self.buffer.data().len();
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    fn view(&mut self, nlines: u64) -> Result<&[u8], ViewError> {
+    pub async fn view(&mut self, nlines: u64) -> Result<&[u8], ViewError> {
         eprintln!("building view for {} lines", nlines);
         while !self
             .current_view()
             .iter()
             .filter(|&&x| x == b'\n')
-            .nth(nlines as usize - 1)
+            .nth(nlines.saturating_sub(1) as usize)
             .is_some()
         {
-            match self.load_next() {
+            match self.load_next().await {
                 Ok(0) => break,
                 Ok(_) => (),
                 Err(e) => return Err(ViewError::from(e.to_string())),
@@ -113,7 +67,7 @@ impl FileView for BufferedFileView {
         }
         return Ok(self.current_view());
     }
-    fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
+    pub async fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut breaker = InfiniteLoopBreaker::new(
             10,
             ViewError::from("exceeded max number of iterations trying to go up"),
@@ -131,7 +85,7 @@ impl FileView for BufferedFileView {
                     lines -= 1;
                     breaker.reset();
                 }
-                None => match self.load_prev() {
+                None => match self.load_prev().await {
                     Ok(0) => {
                         let was_at_top = self.view_offset == 0;
                         self.view_offset = 0;
@@ -151,7 +105,7 @@ impl FileView for BufferedFileView {
         }
         return Ok(());
     }
-    fn up_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError> {
+    pub async fn up_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError> {
         eprintln!("up to line matching {}", regex.as_str());
 
         let state = self.save_state();
@@ -162,14 +116,14 @@ impl FileView for BufferedFileView {
                 // align view_offset to a line start, use self.up
                 // add 1 to the view offset in case the match is start of line already
                 self.view_offset = m.start() + 1;
-                self.up(1).ok();
+                self.up(1).await.ok();
                 self.current_line = None;
                 return Ok(());
             }
 
             self.view_offset = MATCH_WINDOW;
 
-            match self.load_prev() {
+            match self.load_prev().await {
                 Ok(0) => {
                     self.load_state(&state);
                     return Err(ViewError::from("no match found"));
@@ -182,7 +136,7 @@ impl FileView for BufferedFileView {
             }
         }
     }
-    fn down(&mut self, mut lines: u64) -> Result<(), ViewError> {
+    pub async fn down(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut breaker = InfiniteLoopBreaker::new(
             10,
             ViewError::from("exceeded max number of iterations trying to go down"),
@@ -198,7 +152,7 @@ impl FileView for BufferedFileView {
                     lines -= 1;
                     breaker.reset();
                 }
-                None => match self.load_next() {
+                None => match self.load_next().await {
                     Ok(0) => return Err(ViewError::from("already at the bottom")),
                     Ok(_) => (),
                     Err(e) => return Err(ViewError::from(e.to_string())),
@@ -207,7 +161,7 @@ impl FileView for BufferedFileView {
         }
         return Ok(());
     }
-    fn down_to_line_matching(
+    pub async fn down_to_line_matching(
         &mut self,
         regex: &Regex,
         skip_current: bool,
@@ -216,7 +170,7 @@ impl FileView for BufferedFileView {
 
         let state = self.save_state();
         if skip_current {
-            self.down(1).ok();
+            self.down(1).await.ok();
         }
 
         loop {
@@ -225,14 +179,14 @@ impl FileView for BufferedFileView {
                 // align view_offset to a line start, use self.up
                 // add 1 to the view offset in case the match is start of line already
                 self.view_offset += m.start() + 1;
-                self.up(1).ok();
+                self.up(1).await.ok();
                 self.current_line = None;
                 return Ok(());
             }
 
             self.view_offset += self.current_view().len().saturating_sub(MATCH_WINDOW);
 
-            match self.load_next() {
+            match self.load_next().await {
                 Ok(0) => {
                     self.load_state(&state);
                     return Err(ViewError::from("no match found"));
@@ -245,38 +199,84 @@ impl FileView for BufferedFileView {
             }
         }
     }
-    fn jump_to_line(&mut self, line: u64) -> Result<(), ViewError> {
+    pub async fn jump_to_line(&mut self, line: i64) -> Result<(), ViewError> {
         eprintln!("jump to line {}", line);
 
-        if self.current_line.is_none() {
-            self.top()
+        if line >= 0 && (self.current_line.is_none() || self.current_line.unwrap() < 0) {
+            self.top().await?
+        } else if line < 0 && (self.current_line.is_none() || self.current_line.unwrap() >= 0) {
+            self.bottom().await
         }
 
-        let offset = line as i64 - self.current_line().unwrap() as i64;
+        let offset = line - self.current_line().unwrap();
         return if offset > 0 {
-            self.down(offset.abs() as u64)
+            self.down(offset.abs() as u64).await
+        } else if offset < 0 {
+            self.up(offset.abs() as u64).await
         } else {
-            self.up(offset.abs() as u64)
+            Ok(())
         };
     }
-    fn jump_to_byte(&mut self, bytes: u64) {
+    pub async fn jump_to_byte(&mut self, bytes: u64) -> Result<(), ViewError> {
         eprintln!("jump to byte {}", bytes);
 
         self.buffer.jump(bytes);
         self.view_offset = 0;
         self.current_line = None;
-        self.up(1).ok();
+        self.up(1).await
     }
-    fn top(&mut self) {
+    pub async fn top(&mut self) -> Result<(), ViewError> {
         eprintln!("jump to top");
 
-        self.jump_to_byte(0);
+        self.jump_to_byte(0).await
     }
-    fn bottom(&mut self) {
+    pub async fn bottom(&mut self) {
         eprintln!("jump to bottom");
 
-        self.buffer.jump(self.buffer.total_size() - 1);
+        self.buffer.jump(self.buffer.total_size().await - 1);
         self.view_offset = 0;
         self.current_line = Some(0);
+    }
+    fn current_view(&mut self) -> &[u8] {
+        return self.buffer.data().get(self.view_offset..).unwrap_or(b"");
+    }
+    fn above_view(&mut self) -> &[u8] {
+        return self.buffer.data().get(..self.view_offset).unwrap_or(b"");
+    }
+    fn maybe_shrink(&mut self) {
+        if self.buffer.range().count() > MAYBE_SHRINK_THRESHOLD {
+            self.shrink()
+        }
+    }
+    fn shrink(&mut self) {
+        let start = self.view_offset as u64 + self.buffer.range().start;
+        let end = start + SHRINK_BUFFER_SIZE as u64;
+        self.buffer.shrink_to(Range { start, end });
+        self.view_offset = 0;
+    }
+    async fn load_next(&mut self) -> io::Result<usize> {
+        let load_size = self.buffer.load_next().await?;
+        self.maybe_shrink();
+        eprintln!("loaded {} next bytes", load_size);
+        return Ok(load_size);
+    }
+    async fn load_prev(&mut self) -> io::Result<usize> {
+        let load_size = self.buffer.load_prev().await?;
+        self.view_offset += load_size;
+        self.maybe_shrink();
+        eprintln!("loaded {} previous bytes", load_size);
+        return Ok(load_size);
+    }
+    fn save_state(&self) -> ViewState {
+        return ViewState {
+            view_offset: self.view_offset,
+            current_line: self.current_line,
+            buffer_pos: self.buffer.range().start,
+        };
+    }
+    fn load_state(&mut self, state: &ViewState) {
+        self.view_offset = state.view_offset;
+        self.current_line = state.current_line;
+        self.buffer.jump(state.buffer_pos);
     }
 }

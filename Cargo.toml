@@ -5,11 +5,15 @@ edition = "2021"
 
 [dependencies]
 tui = "0.17"
-crossterm = "0.22"
+crossterm = { version = "0.22", features = ["event-stream"] }
 bzip2 = "0.4"
 regex = "1"
 gag = "1.0.0"
 atty = "0.2.14"
 signal-hook = "0.3.13"
+signal-hook-async-std = "0.2.2"
 clap = { version = "3.0.14", features = ["derive"] }
 human_bytes = { version = "0.3", features = ["fast"] }
+futures = "0.3.21"
+async-trait = "0.1.52"
+tokio = { version = "1.16.1", features = ["full"] }
