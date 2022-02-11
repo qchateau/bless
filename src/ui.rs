@@ -211,33 +211,6 @@ impl Ui {
         return res;
     }
 
-    pub fn run(&mut self) -> io::Result<()> {
-        let mut wait_signal = Signals::new(TERM_SIGNALS)?;
-        let backend = CrosstermBackend::new(io::stdout());
-        let mut terminal = Terminal::new(backend)?;
-
-        while !self.stop {
-            for sig in wait_signal.pending() {
-                eprintln!("received singal {}", sig);
-                return Ok(());
-            }
-
-            terminal.draw(|f| self.refresh(f))?;
-
-            if crossterm::event::poll(Duration::from_millis(500))? {
-                if let Event::Key(key) = event::read()? {
-                    let term_size = terminal.size()?;
-                    self.status.clear();
-                    self.handle_key(&term_size, key)
-                        .and_then(|_| self.handle_command(&term_size))
-                        .unwrap_or_else(|e| self.set_error(e));
-                }
-            }
-        }
-
-        return Ok(());
-    }
-
     fn refresh<B: Backend>(&mut self, f: &mut Frame<B>) {
         if self.follow {
             self.file_view.bottom();
@@ -344,6 +317,33 @@ impl Ui {
             .block(Block::default())
             .alignment(Alignment::Left);
         f.render_widget(paragraph, chunks[1]);
+    }
+
+    pub fn run(&mut self) -> io::Result<()> {
+        let mut wait_signal = Signals::new(TERM_SIGNALS)?;
+        let backend = CrosstermBackend::new(io::stdout());
+        let mut terminal = Terminal::new(backend)?;
+
+        while !self.stop {
+            for sig in wait_signal.pending() {
+                eprintln!("received singal {}", sig);
+                return Ok(());
+            }
+
+            terminal.draw(|f| self.refresh(f))?;
+
+            if crossterm::event::poll(Duration::from_millis(500))? {
+                if let Event::Key(key) = event::read()? {
+                    let term_size = terminal.size()?;
+                    self.status.clear();
+                    self.handle_key(&term_size, key)
+                        .and_then(|_| self.handle_command(&term_size))
+                        .unwrap_or_else(|e| self.set_error(e));
+                }
+            }
+        }
+
+        return Ok(());
     }
 
     fn set_error<D: Display>(&mut self, e: D) {
