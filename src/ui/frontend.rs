@@ -250,29 +250,57 @@ impl Frontend {
     }
 
     fn refresh<B: backend::Backend>(f: &mut Frame<B>, front: &FrontendState, back: &BackendState) {
+        let width = f.size().width as usize;
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(4), Constraint::Percentage(100)].as_ref())
             .split(f.size());
 
-        let text = match front.search.as_ref() {
-            None => Text::from(back.text.clone()),
-            Some(re) => {
-                let match_style = Style::default().bg(Color::DarkGray);
-                let mut lines = Vec::new();
-                for mut line in back.text.lines() {
-                    let mut spans = Vec::new();
+        let text = {
+            let match_style = Style::default().bg(Color::DarkGray);
+            let mut lines = Vec::new();
+
+            for mut line in back.text.lines() {
+                let mut spans = Vec::new();
+
+                if let Some(re) = front.search.as_ref() {
                     while let Some(m) = re.find(line) {
-                        let before = &line[..m.start()];
+                        let mut before = &line[..m.start()];
+
+                        while front.wrap && before.len() > width {
+                            let (left, right) = before.split_at(width);
+                            spans.push(Span::raw(left));
+                            lines.push(Spans::from(spans.clone()));
+                            spans.clear();
+                            before = right;
+                        }
                         spans.push(Span::raw(before));
-                        spans.push(Span::styled(m.as_str(), match_style));
+
+                        let mut match_content = m.as_str();
+                        while front.wrap && match_content.len() + before.len() > width {
+                            let (left, right) = match_content.split_at(width - before.len());
+                            spans.push(Span::styled(left, match_style));
+                            lines.push(Spans::from(spans.clone()));
+                            spans.clear();
+                            match_content = right;
+                        }
+                        spans.push(Span::styled(match_content, match_style));
                         line = &line.get(m.end()..).unwrap_or("");
                     }
-                    spans.push(Span::raw(line));
-                    lines.push(Spans::from(spans))
                 }
-                Text::from(lines)
+
+                while front.wrap && line.len() > width {
+                    let (left, right) = line.split_at(width);
+                    spans.push(Span::raw(left));
+                    lines.push(Spans::from(spans.clone()));
+                    spans.clear();
+                    line = right;
+                }
+                spans.push(Span::raw(line));
+
+                lines.push(Spans::from(spans))
             }
+            Text::from(lines)
         };
 
         let mut flags = Vec::new();
@@ -298,8 +326,8 @@ impl Frontend {
             } else {
                 format!(", {}", flags.join(", "))
             },
-            if !back.status.is_empty() {
-                format!("Backend error: {}", back.status)
+            if let Some(e) = back.error.as_ref() {
+                format!("Backend error: {}", e)
             } else if let Some(e) = front.error.as_ref() {
                 format!("Frontend error: {}", e)
             } else {

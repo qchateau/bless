@@ -19,7 +19,7 @@ pub enum Command {
 pub struct BackendState {
     pub file_path: String,
     pub file_size: u64,
-    pub status: String,
+    pub error: Option<String>,
     pub current_line: Option<i64>,
     pub offset: u64,
     pub text: String,
@@ -30,8 +30,8 @@ impl BackendState {
     pub fn new() -> Self {
         return Self {
             file_path: String::new(),
-            status: String::new(),
             text: String::new(),
+            error: None,
             follow: false,
             file_size: 0,
             current_line: None,
@@ -72,7 +72,7 @@ impl Backend {
             };
             let mut state = BackendState::new();
             if let Err(e) = self.handle_command(command, &mut state).await {
-                state.status = format!("{}", e);
+                state.error = Some(format!("{}", e));
             }
             self.update_state(&mut state).await;
             self.state_sender
@@ -155,11 +155,11 @@ impl Backend {
             let text = match self.file_view.view(height).await {
                 Ok(x) => x,
                 Err(e) => {
-                    if state.status.is_empty() {
-                        state.status = format!("{}", e);
+                    state.error = Some(if let Some(error) = state.error.as_ref() {
+                        error.clone() + &format!(", {}", e)
                     } else {
-                        state.status += &format!(", {}", e);
-                    }
+                        format!("{}", e)
+                    });
                     b""
                 }
             };
