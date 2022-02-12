@@ -2,12 +2,10 @@ use super::devec::DeVec;
 use async_trait::async_trait;
 use std::{
     cmp::{max, min},
-    io,
-    ops::Range,
-};
-use tokio::{
     fs::File,
-    io::{AsyncReadExt, AsyncSeekExt},
+    io::{self, Read, Seek},
+    ops::Range,
+    os::unix::fs::FileExt,
 };
 
 const BUFFER_SIZE: usize = 0xffff;
@@ -21,7 +19,7 @@ pub struct FileBuffer {
 
 impl FileBuffer {
     pub async fn new(path: &str) -> Result<Self, io::Error> {
-        let file = File::open(path).await?;
+        let file = File::open(path)?;
         return Ok(Self {
             buffer_offset: 0,
             buffer: DeVec::new(),
@@ -46,7 +44,7 @@ impl super::FileBuffer for FileBuffer {
         self.buffer_offset = bytes;
     }
     async fn total_size(&self) -> u64 {
-        return self.file.metadata().await.unwrap().len();
+        return self.file.metadata().unwrap().len();
     }
     async fn load_prev(&mut self) -> io::Result<usize> {
         let try_read_size = min(self.buffer_offset as usize, BUFFER_SIZE);
@@ -57,8 +55,8 @@ impl super::FileBuffer for FileBuffer {
 
         let read_offset = self.buffer_offset - try_read_size as u64;
 
-        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)).await {
-            Ok(_) => self.file.read(buf).await,
+        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
+            Ok(_) => self.file.read(buf),
             Err(e) => Err(e),
         };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
@@ -79,8 +77,8 @@ impl super::FileBuffer for FileBuffer {
         let buf_start = buf.len() - BUFFER_SIZE;
         let buf = &mut buf[buf_start..];
 
-        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)).await {
-            Ok(_) => self.file.read(buf).await,
+        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
+            Ok(_) => self.file.read(buf),
             Err(e) => Err(e),
         };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
