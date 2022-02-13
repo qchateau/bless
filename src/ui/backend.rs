@@ -150,8 +150,7 @@ impl CommandHandler {
             }
 
             if self.follow {
-                self.file_view.bottom().await;
-                self.file_view.up(self.view_height as u64).await.ok();
+                while self.file_view.down(1_000_000).await.is_ok() {}
             }
 
             self.send_state().await?;
@@ -163,6 +162,7 @@ impl CommandHandler {
         let res = match command {
             Command::Follow(follow) => {
                 self.follow = follow;
+                self.file_view.bottom().await;
                 Ok(())
             }
             Command::SearchDown(pattern) => {
