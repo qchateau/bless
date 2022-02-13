@@ -13,6 +13,7 @@ pub enum Command {
     SearchDownNext(String),
     SearchUp(String),
     Follow(bool),
+    Resize(u64),
 }
 
 #[derive(Clone)]
@@ -44,6 +45,7 @@ pub struct Backend {
     command_receiver: UnboundedReceiver<Command>,
     state_sender: Sender<BackendState>,
     file_view: FileView,
+    view_size: u64,
 }
 
 impl Backend {
@@ -56,6 +58,7 @@ impl Backend {
             command_receiver,
             state_sender,
             file_view,
+            view_size: 0,
         };
     }
     pub async fn run(&mut self) -> Result<(), ViewError> {
@@ -128,6 +131,10 @@ impl Backend {
                 let pos = self.file_view.file_size().await as f64 * ratio;
                 self.file_view.jump_to_byte(pos as u64).await
             }
+            Command::Resize(size) => {
+                self.view_size = size;
+                Ok(())
+            }
         };
 
         return res;
@@ -142,10 +149,7 @@ impl Backend {
 
         state.file_path = self.file_view.file_path().to_owned();
         state.text = loop {
-            // FIXME
-            // let height = state.term_size.height as u64;
-            let height = 100;
-            let text = match self.file_view.view(height).await {
+            let text = match self.file_view.view(self.view_size).await {
                 Ok(x) => x,
                 Err(e) => {
                     state.error = Some(if let Some(error) = state.error.as_ref() {

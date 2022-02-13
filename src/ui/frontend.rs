@@ -71,7 +71,8 @@ impl Frontend {
             select! {
                 maybe_event = events_reader.next().fuse() => match maybe_event {
                     Some(Ok(Event::Key(key))) => self.handle_key(key),
-                    Some(Ok(_)) => (),
+                    Some(Ok(Event::Resize(_, height))) => self.send_command(Command::Resize(height as u64)),
+                    Some(Ok(_)) => {},
                     Some(Err(e)) => return Err(ViewError::from(format!("event error: {}", e))),
                     None => return Err(ViewError::from("end of event stream: {}")),
                 },
@@ -285,47 +286,41 @@ impl Frontend {
         let mut view_lines_per_line = Vec::new();
 
         let text = {
-            let match_style = Style::default().bg(Color::DarkGray);
             let mut lines = Vec::new();
 
             for mut line in back.text.lines() {
-                let mut spans = Vec::new();
                 let lines_before = lines.len();
+                let mut spans = Vec::new();
+
+                macro_rules! handle_line {
+                    ($data:expr, $style:expr) => {
+                        if self.wrap {
+                            while let Some((char_pos, _)) = $data.char_indices().nth(
+                                text_width - spans.iter().fold(0, |acc, x: &Span| acc + x.width()),
+                            ) {
+                                let (left, right) = $data.split_at(char_pos);
+                                spans.push(Span::styled(left, $style));
+                                lines.push(Spans::from(spans.clone()));
+                                spans.clear();
+                                $data = right;
+                            }
+                        }
+                        spans.push(Span::styled($data, $style));
+                    };
+                }
 
                 if let Some(re) = self.search.as_ref() {
                     while let Some(m) = re.find(line) {
                         let mut before = &line[..m.start()];
-
-                        while self.wrap && before.len() > text_width {
-                            let (left, right) = before.split_at(text_width);
-                            spans.push(Span::raw(left));
-                            lines.push(Spans::from(spans.clone()));
-                            spans.clear();
-                            before = right;
-                        }
-                        spans.push(Span::raw(before));
-
                         let mut match_content = m.as_str();
-                        while self.wrap && match_content.len() + before.len() > text_width {
-                            let (left, right) = match_content.split_at(text_width - before.len());
-                            spans.push(Span::styled(left, match_style));
-                            lines.push(Spans::from(spans.clone()));
-                            spans.clear();
-                            match_content = right;
-                        }
-                        spans.push(Span::styled(match_content, match_style));
+
+                        handle_line![before, Style::default()];
+                        handle_line![match_content, Style::default().bg(Color::DarkGray)];
+
                         line = &line.get(m.end()..).unwrap_or("");
                     }
                 }
-
-                while self.wrap && line.len() > text_width {
-                    let (left, right) = line.split_at(text_width);
-                    spans.push(Span::raw(left));
-                    lines.push(Spans::from(spans.clone()));
-                    spans.clear();
-                    line = right;
-                }
-                spans.push(Span::raw(line));
+                handle_line![line, Style::default()];
 
                 lines.push(Spans::from(spans));
                 view_lines_per_line.push(lines.len() - lines_before);
