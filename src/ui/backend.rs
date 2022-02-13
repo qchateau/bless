@@ -123,14 +123,7 @@ impl Backend {
                     Ok(())
                 }
             }
-            Command::JumpLine(line) => {
-                if line >= 0 {
-                    self.file_view.jump_to_line(line).await
-                } else {
-                    self.file_view.bottom().await;
-                    self.file_view.up((-line) as u64).await
-                }
-            }
+            Command::JumpLine(line) => self.file_view.jump_to_line(line).await,
             Command::JumpFileRatio(ratio) => {
                 let pos = self.file_view.file_size().await as f64 * ratio;
                 self.file_view.jump_to_byte(pos as u64).await

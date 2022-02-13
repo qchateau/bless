@@ -222,8 +222,14 @@ impl FileView {
 
         self.buffer.jump(bytes);
         self.view_offset = 0;
-        self.current_line = None;
-        self.up(1).await
+
+        if bytes == 0 {
+            self.current_line = Some(0);
+            Ok(())
+        } else {
+            self.current_line = None;
+            self.up(1).await
+        }
     }
     pub async fn top(&mut self) -> Result<(), ViewError> {
         eprintln!("jump to top");
