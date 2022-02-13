@@ -5,7 +5,6 @@ use std::{
     fs::File,
     io::{self, Read, Seek},
     ops::Range,
-    os::unix::fs::FileExt,
 };
 use tokio::task::yield_now;
 
