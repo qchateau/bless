@@ -23,9 +23,10 @@ pub struct Ui {
 impl Ui {
     pub fn new(file_view: FileView) -> io::Result<Self> {
         let (state_sender, state_receiver) = watch::channel(BackendState::new());
-        let (cmd_sender, cmd_receiver) = mpsc::unbounded_channel();
-        let backend = Backend::new(cmd_receiver, state_sender, file_view);
-        let frontend = Frontend::new(cmd_sender, state_receiver)?;
+        let (command_sender, command_receiver) = mpsc::unbounded_channel();
+        let (cancel_sender, cancel_receiver) = mpsc::unbounded_channel();
+        let backend = Backend::new(command_receiver, cancel_receiver, state_sender, file_view);
+        let frontend = Frontend::new(command_sender, cancel_sender, state_receiver)?;
         return Ok(Self { backend, frontend });
     }
     pub async fn run(&mut self) -> io::Result<()> {

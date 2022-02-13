@@ -1,5 +1,12 @@
 use regex::bytes::Regex;
-use tokio::sync::{mpsc::UnboundedReceiver, watch::Sender};
+use std::{
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
+use tokio::{
+    select,
+    sync::{mpsc::UnboundedReceiver, watch::Sender},
+};
 
 use crate::{errors::ViewError, file_view::FileView};
 
@@ -40,27 +47,68 @@ impl BackendState {
     }
 }
 
-pub struct Backend {
+struct CommandHandler {
     command_receiver: UnboundedReceiver<Command>,
     state_sender: Sender<BackendState>,
     file_view: FileView,
     view_size: u64,
+    cancelled: Rc<AtomicBool>,
+}
+
+struct CancelHandler {
+    cancel_receiver: UnboundedReceiver<()>,
+    cancelled: Rc<AtomicBool>,
+}
+
+pub struct Backend {
+    command_handler: CommandHandler,
+    cancel_handler: CancelHandler,
 }
 
 impl Backend {
     pub fn new(
         command_receiver: UnboundedReceiver<Command>,
+        cancel_receiver: UnboundedReceiver<()>,
         state_sender: Sender<BackendState>,
         file_view: FileView,
     ) -> Self {
+        let cancelled = Rc::from(AtomicBool::from(false));
         return Self {
-            command_receiver,
-            state_sender,
-            file_view,
-            view_size: 0,
+            command_handler: CommandHandler {
+                command_receiver,
+                state_sender,
+                file_view,
+                view_size: 0,
+                cancelled: cancelled.clone(),
+            },
+            cancel_handler: CancelHandler {
+                cancel_receiver,
+                cancelled: cancelled.clone(),
+            },
         };
     }
+
     pub async fn run(&mut self) -> Result<(), ViewError> {
+        select! {
+            res = self.command_handler.run() => res,
+            res = self.cancel_handler.run() => res,
+        }
+    }
+}
+
+impl CancelHandler {
+    async fn run(&mut self) -> Result<(), ViewError> {
+        loop {
+            match self.cancel_receiver.recv().await {
+                Some(_) => self.cancelled.store(true, Ordering::Release),
+                None => return Err(ViewError::from("cancel channel error")),
+            }
+        }
+    }
+}
+
+impl CommandHandler {
+    async fn run(&mut self) -> Result<(), ViewError> {
         let mut state = BackendState::new();
         self.update_state(&mut state).await;
         self.state_sender
@@ -68,6 +116,12 @@ impl Backend {
             .map_err(|_| ViewError::from("state channel error"))?;
 
         loop {
+            if self.cancelled.load(Ordering::Acquire) {
+                // flush all pending commands
+                while let Ok(_) = self.command_receiver.try_recv() {}
+                self.cancelled.store(false, Ordering::Release);
+            }
+
             let command = match self.command_receiver.recv().await {
                 Some(command) => command,
                 None => return Err(ViewError::from("command channel error")),
@@ -82,6 +136,7 @@ impl Backend {
                 .map_err(|_| ViewError::from("state channel error"))?;
         }
     }
+
     async fn handle_command(
         &mut self,
         command: Command,
@@ -98,6 +153,7 @@ impl Backend {
                     .down_to_line_matching(
                         &Regex::new(&pattern).map_err(|_| ViewError::from("invalid regex"))?,
                         false,
+                        &self.cancelled,
                     )
                     .await
             }
@@ -106,6 +162,7 @@ impl Backend {
                     .down_to_line_matching(
                         &Regex::new(&pattern).map_err(|_| ViewError::from("invalid regex"))?,
                         true,
+                        &self.cancelled,
                     )
                     .await
             }
@@ -113,6 +170,7 @@ impl Backend {
                 self.file_view
                     .up_to_line_matching(
                         &Regex::new(&pattern).map_err(|_| ViewError::from("invalid regex"))?,
+                        &self.cancelled,
                     )
                     .await
             }

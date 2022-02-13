@@ -4,7 +4,11 @@ use crate::{
     utils::InfiniteLoopBreaker,
 };
 use regex::bytes::Regex;
-use std::{io, ops::Range};
+use std::{
+    io,
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 const MATCH_WINDOW: usize = 0x1000;
 const SHRINK_BUFFER_SIZE: usize = 0x100000;
@@ -105,12 +109,16 @@ impl FileView {
         }
         return Ok(());
     }
-    pub async fn up_to_line_matching(&mut self, regex: &Regex) -> Result<(), ViewError> {
+    pub async fn up_to_line_matching(
+        &mut self,
+        regex: &Regex,
+        cancelled: &AtomicBool,
+    ) -> Result<(), ViewError> {
         eprintln!("up to line matching {}", regex.as_str());
 
         let state = self.save_state();
 
-        loop {
+        let err = loop {
             let m = regex.find_iter(self.above_view()).last();
             if let Some(m) = m {
                 // align view_offset to a line start, use self.up
@@ -124,17 +132,19 @@ impl FileView {
             self.view_offset = MATCH_WINDOW;
 
             match self.load_prev().await {
-                Ok(0) => {
-                    self.load_state(&state);
-                    return Err(ViewError::from("no match found"));
-                }
-                Err(e) => {
-                    self.load_state(&state);
-                    return Err(ViewError::from(e.to_string()));
-                }
+                Ok(0) => break ViewError::from("no match found"),
+                Err(e) => break ViewError::from(e.to_string()),
+
                 Ok(_) => (),
             }
-        }
+
+            if cancelled.load(Ordering::Acquire) {
+                break ViewError::from("cancelled");
+            }
+        };
+
+        self.load_state(&state);
+        return Err(err);
     }
     pub async fn down(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut breaker = InfiniteLoopBreaker::new(
@@ -165,6 +175,7 @@ impl FileView {
         &mut self,
         regex: &Regex,
         skip_current: bool,
+        cancelled: &AtomicBool,
     ) -> Result<(), ViewError> {
         eprintln!("down to line matching {}", regex.as_str());
 
@@ -173,7 +184,7 @@ impl FileView {
             self.down(1).await.ok();
         }
 
-        loop {
+        let err = loop {
             let m = regex.find(self.current_view());
             if let Some(m) = m {
                 // align view_offset to a line start, use self.up
@@ -187,17 +198,18 @@ impl FileView {
             self.view_offset += self.current_view().len().saturating_sub(MATCH_WINDOW);
 
             match self.load_next().await {
-                Ok(0) => {
-                    self.load_state(&state);
-                    return Err(ViewError::from("no match found"));
-                }
-                Err(e) => {
-                    self.load_state(&state);
-                    return Err(ViewError::from(e.to_string()));
-                }
+                Ok(0) => break ViewError::from("no match found"),
+                Err(e) => break ViewError::from(e.to_string()),
                 Ok(_) => (),
             }
-        }
+
+            if cancelled.load(Ordering::Acquire) {
+                break ViewError::from("cancelled");
+            }
+        };
+
+        self.load_state(&state);
+        return Err(err);
     }
     pub async fn jump_to_line(&mut self, line: i64) -> Result<(), ViewError> {
         eprintln!("jump to line {}", line);

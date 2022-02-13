@@ -7,6 +7,7 @@ use std::{
     ops::Range,
     os::unix::fs::FileExt,
 };
+use tokio::task::yield_now;
 
 const BUFFER_SIZE: usize = 0xffff;
 
@@ -55,6 +56,7 @@ impl super::FileBuffer for FileBuffer {
 
         let read_offset = self.buffer_offset - try_read_size as u64;
 
+        yield_now().await;
         let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
             Ok(_) => self.file.read(buf),
             Err(e) => Err(e),
@@ -77,6 +79,7 @@ impl super::FileBuffer for FileBuffer {
         let buf_start = buf.len() - BUFFER_SIZE;
         let buf = &mut buf[buf_start..];
 
+        yield_now().await;
         let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
             Ok(_) => self.file.read(buf),
             Err(e) => Err(e),

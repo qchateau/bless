@@ -36,12 +36,14 @@ pub struct Frontend {
     align_bottom: bool,
     allow_refresh_commands: bool,
     command_sender: RefCell<UnboundedSender<Command>>,
+    cancel_sender: RefCell<UnboundedSender<()>>,
     state_receiver: Receiver<BackendState>,
 }
 
 impl Frontend {
     pub fn new(
         command_sender: UnboundedSender<Command>,
+        cancel_sender: UnboundedSender<()>,
         state_receiver: Receiver<BackendState>,
     ) -> io::Result<Self> {
         let crossterm_backend = backend::CrosstermBackend::new(io::stdout());
@@ -57,6 +59,7 @@ impl Frontend {
             allow_refresh_commands: false,
             follow: false,
             command_sender: RefCell::from(command_sender),
+            cancel_sender: RefCell::from(cancel_sender),
             state_receiver,
         });
     }
@@ -114,6 +117,7 @@ impl Frontend {
                 } else {
                     self.command.clear();
                     self.search = None;
+                    self.send_cancel();
                 }
             }
             KeyEvent {
@@ -166,6 +170,7 @@ impl Frontend {
             } => {
                 self.command.clear();
                 self.search = None;
+                self.send_cancel();
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -415,6 +420,12 @@ impl Frontend {
     fn send_command(&self, command: Command) {
         if let Err(e) = self.command_sender.borrow_mut().send(command) {
             self.push_error(format!("command channel error: {}", e));
+        }
+    }
+
+    fn send_cancel(&self) {
+        if let Err(e) = self.cancel_sender.borrow_mut().send(()) {
+            self.push_error(format!("cancel channel error: {}", e));
         }
     }
 
