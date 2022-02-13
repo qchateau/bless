@@ -1,5 +1,4 @@
 use regex::bytes::Regex;
-use std::str::from_utf8;
 use tokio::sync::{mpsc::UnboundedReceiver, watch::Sender};
 
 use crate::{errors::ViewError, file_view::FileView};
@@ -20,7 +19,7 @@ pub enum Command {
 pub struct BackendState {
     pub file_path: String,
     pub file_size: u64,
-    pub error: Option<String>,
+    pub errors: Vec<String>,
     pub current_line: Option<i64>,
     pub offset: u64,
     pub text: String,
@@ -32,7 +31,7 @@ impl BackendState {
         return Self {
             file_path: String::new(),
             text: String::new(),
-            error: None,
+            errors: Vec::new(),
             follow: false,
             file_size: 0,
             current_line: None,
@@ -75,7 +74,7 @@ impl Backend {
             };
             let mut state = BackendState::new();
             if let Err(e) = self.handle_command(command, &mut state).await {
-                state.error = Some(format!("{}", e));
+                state.errors.push(format!("{}", e));
             }
             self.update_state(&mut state).await;
             self.state_sender
@@ -148,21 +147,15 @@ impl Backend {
         }
 
         state.file_path = self.file_view.file_path().to_owned();
-        state.text = loop {
+        state.text = {
             let text = match self.file_view.view(self.view_size).await {
                 Ok(x) => x,
                 Err(e) => {
-                    state.error = Some(if let Some(error) = state.error.as_ref() {
-                        error.clone() + &format!(", {}", e)
-                    } else {
-                        format!("{}", e)
-                    });
+                    state.errors.push(format!("{}", e));
                     b""
                 }
             };
-            break from_utf8(text)
-                .map(|x| x.to_owned())
-                .unwrap_or_else(|e| format!("invalid utf-8: {:?}", e));
+            String::from_utf8_lossy(text).to_string()
         };
 
         state.file_size = self.file_view.file_size().await;

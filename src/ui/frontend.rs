@@ -382,8 +382,8 @@ impl Frontend {
             } else {
                 format!(", {}", flags.join(", "))
             },
-            if let Some(e) = back.error.as_ref() {
-                format!("Backend error: {}", e)
+            if !back.errors.is_empty() {
+                format!("Backend error: {}", back.errors.join(", "))
             } else if !self.errors.borrow().is_empty() {
                 format!("Frontend error: {}", self.errors.borrow().join(", "))
             } else {
