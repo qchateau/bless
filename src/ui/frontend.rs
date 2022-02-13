@@ -67,6 +67,9 @@ impl Frontend {
         let mut events_reader = EventStream::new();
         let mut signals_reader = Signals::new(TERM_SIGNALS)
             .map_err(|e| ViewError::from(format!("failed to install signal handler: {}", e)))?;
+        self.send_command(Command::Resize(
+            self.terminal.as_ref().unwrap().size().unwrap().height as u64,
+        ));
 
         while !self.stop {
             self.update()?;

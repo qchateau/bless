@@ -1,12 +1,13 @@
 use crate::{
     errors::ViewError,
     file_buffer::{make_file_buffer, FileBuffer},
-    utils::InfiniteLoopBreaker,
+    utils::{nth_or_last, InfiniteLoopBreaker},
 };
-use regex::bytes::Regex;
+use regex::Regex;
 use std::{
     io,
     ops::Range,
+    str::{from_utf8, from_utf8_unchecked},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -54,22 +55,29 @@ impl FileView {
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    pub async fn view(&mut self, nlines: u64) -> Result<&[u8], ViewError> {
+    pub async fn view(&mut self, nlines: u64) -> Result<&str, ViewError> {
         eprintln!("building view for {} lines", nlines);
-        while !self
-            .current_view()
-            .iter()
-            .filter(|&&x| x == b'\n')
-            .nth(nlines.saturating_sub(1) as usize)
-            .is_some()
-        {
-            match self.load_next().await {
-                Ok(0) => break,
-                Ok(_) => (),
-                Err(e) => return Err(ViewError::from(e.to_string())),
+        let mut eof = false;
+
+        loop {
+            if let Some((offset, _)) = self.current_view().match_indices('\n').nth(nlines as usize)
+            {
+                return Ok(&self.current_view()[..offset]);
+            }
+
+            if !eof {
+                match self.load_next().await {
+                    Ok(0) => eof = true,
+                    Ok(_) => (),
+                    Err(e) => return Err(ViewError::from(e.to_string())),
+                }
+            }
+
+            // FIXME: optimize
+            if let Err(_) = self.up(1).await {
+                return Ok(self.current_view());
             }
         }
-        return Ok(self.current_view());
     }
     pub async fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut breaker = InfiniteLoopBreaker::new(
@@ -80,13 +88,14 @@ impl FileView {
         eprintln!("up {}", lines);
         while lines > 0 {
             breaker.it()?;
+
             let view = self.above_view();
             let view = &view[..view.len().saturating_sub(1)]; // skip backline
-            match view.iter().rposition(|&x| x == b'\n') {
-                Some(pos) => {
+            match nth_or_last(view.rmatch_indices('\n'), lines.saturating_sub(1) as usize) {
+                Some(((pos, _), nth)) => {
                     self.view_offset = pos + 1;
-                    self.current_line = self.current_line.map(|x| x - 1);
-                    lines -= 1;
+                    self.current_line = self.current_line.map(|x| x - 1 - nth as i64);
+                    lines -= 1 + nth as u64;
                     breaker.reset();
                 }
                 None => match self.load_prev().await {
@@ -155,11 +164,14 @@ impl FileView {
         eprintln!("down {}", lines);
         while lines > 0 {
             breaker.it()?;
-            match self.current_view().iter().position(|&x| x == b'\n') {
-                Some(pos) => {
+            match nth_or_last(
+                self.current_view().match_indices('\n'),
+                lines.saturating_sub(1) as usize,
+            ) {
+                Some(((pos, _), nth)) => {
                     self.view_offset += pos + 1;
-                    self.current_line = self.current_line.map(|x| x + 1);
-                    lines -= 1;
+                    self.current_line = self.current_line.map(|x| x + 1 + nth as i64);
+                    lines -= 1 + nth as u64;
                     breaker.reset();
                 }
                 None => match self.load_next().await {
@@ -214,13 +226,24 @@ impl FileView {
     pub async fn jump_to_line(&mut self, line: i64) -> Result<(), ViewError> {
         eprintln!("jump to line {}", line);
 
+        //  move to the right "side" of the file
         if line >= 0 && (self.current_line.is_none() || self.current_line.unwrap() < 0) {
             self.top().await?
         } else if line < 0 && (self.current_line.is_none() || self.current_line.unwrap() >= 0) {
             self.bottom().await
         }
 
-        let offset = line - self.current_line().unwrap();
+        let mut offset = line - self.current_line().unwrap();
+        if offset.abs() > line.abs() / 2 {
+            // shotcut, easier to reset the cursor
+            if line >= 0 {
+                self.top().await?;
+            } else {
+                self.bottom().await;
+            }
+            offset = line;
+        }
+
         return if offset > 0 {
             self.down(offset.abs() as u64).await
         } else if offset < 0 {
@@ -255,11 +278,19 @@ impl FileView {
         self.view_offset = 0;
         self.current_line = Some(0);
     }
-    fn current_view(&mut self) -> &[u8] {
-        return self.buffer.data().get(self.view_offset..).unwrap_or(b"");
+    fn current_view(&self) -> &str {
+        let slice = self.buffer.data().get(self.view_offset..).unwrap_or(b"");
+        match from_utf8(slice) {
+            Ok(string) => string,
+            Err(e) => unsafe { from_utf8_unchecked(&slice[..e.valid_up_to()]) },
+        }
     }
-    fn above_view(&mut self) -> &[u8] {
-        return self.buffer.data().get(..self.view_offset).unwrap_or(b"");
+    fn above_view(&self) -> &str {
+        let slice = self.buffer.data().get(..self.view_offset).unwrap_or(b"");
+        match from_utf8(slice) {
+            Ok(string) => string,
+            Err(e) => unsafe { from_utf8_unchecked(&slice[..e.valid_up_to()]) },
+        }
     }
     fn maybe_shrink(&mut self) {
         if self.buffer.range().count() > MAYBE_SHRINK_THRESHOLD {

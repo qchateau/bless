@@ -1,4 +1,4 @@
-use regex::bytes::Regex;
+use regex::Regex;
 use std::{
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
@@ -6,6 +6,7 @@ use std::{
 use tokio::{
     select,
     sync::{mpsc::UnboundedReceiver, watch::Sender},
+    time::{self, Duration},
 };
 
 use crate::{errors::ViewError, file_view::FileView};
@@ -53,6 +54,8 @@ struct CommandHandler {
     file_view: FileView,
     view_size: u64,
     cancelled: Rc<AtomicBool>,
+    follow: bool,
+    command_errors: Vec<String>,
 }
 
 struct CancelHandler {
@@ -80,6 +83,8 @@ impl Backend {
                 file_view,
                 view_size: 0,
                 cancelled: cancelled.clone(),
+                follow: false,
+                command_errors: Vec::new(),
             },
             cancel_handler: CancelHandler {
                 cancel_receiver,
@@ -109,11 +114,8 @@ impl CancelHandler {
 
 impl CommandHandler {
     async fn run(&mut self) -> Result<(), ViewError> {
-        let mut state = BackendState::new();
-        self.update_state(&mut state).await;
-        self.state_sender
-            .send(state)
-            .map_err(|_| ViewError::from("state channel error"))?;
+        self.send_state().await?;
+        let mut prev_file_size = 0;
 
         loop {
             if self.cancelled.load(Ordering::Acquire) {
@@ -122,30 +124,43 @@ impl CommandHandler {
                 self.cancelled.store(false, Ordering::Release);
             }
 
-            let command = match self.command_receiver.recv().await {
-                Some(command) => command,
-                None => return Err(ViewError::from("command channel error")),
-            };
-            let mut state = BackendState::new();
-            if let Err(e) = self.handle_command(command, &mut state).await {
-                state.errors.push(format!("{}", e));
+            let sleep_time_ms = if self.follow { 100 } else { 10000 };
+
+            select! {
+                 msg = self.command_receiver.recv() => {
+                    let command = match msg {
+                        Some(command) => command,
+                        None => return Err(ViewError::from("command channel error")),
+                    };
+
+                    self.command_errors.clear();
+                    if let Err(e) = self.handle_command(command).await {
+                        self.command_errors.push(format!("{}", e));
+                    }
+                },
+                _ = time::sleep(Duration::from_millis(sleep_time_ms)) => {
+                    let file_size = self.file_view.file_size().await;
+                    if file_size == prev_file_size {
+                        continue;
+                    }
+                    prev_file_size = file_size;
+                },
             }
-            self.update_state(&mut state).await;
-            self.state_sender
-                .send(state)
-                .map_err(|_| ViewError::from("state channel error"))?;
+
+            if self.follow {
+                self.file_view.bottom().await;
+                self.file_view.up(self.view_size).await.ok();
+            }
+
+            self.send_state().await?;
         }
     }
 
-    async fn handle_command(
-        &mut self,
-        command: Command,
-        state: &mut BackendState,
-    ) -> Result<(), ViewError> {
+    async fn handle_command(&mut self, command: Command) -> Result<(), ViewError> {
         eprintln!("command: {:?}", command);
         let res = match command {
             Command::Follow(follow) => {
-                state.follow = follow;
+                self.follow = follow;
                 Ok(())
             }
             Command::SearchDown(pattern) => {
@@ -197,12 +212,8 @@ impl CommandHandler {
         return res;
     }
 
-    async fn update_state(&mut self, state: &mut BackendState) {
-        if state.follow {
-            self.file_view.bottom().await;
-            // FIXME
-            // self.file_view.up(state.term_size.height.into()).await.ok();
-        }
+    async fn generate_state(&mut self) -> BackendState {
+        let mut state = BackendState::new();
 
         state.file_path = self.file_view.file_path().to_owned();
         state.text = {
@@ -210,14 +221,27 @@ impl CommandHandler {
                 Ok(x) => x,
                 Err(e) => {
                     state.errors.push(format!("{}", e));
-                    b""
+                    ""
                 }
             };
-            String::from_utf8_lossy(text).to_string()
+            text.to_string()
+            // String::from_utf8_lossy(text).to_string()
         };
 
         state.file_size = self.file_view.file_size().await;
         state.current_line = self.file_view.current_line();
         state.offset = self.file_view.offset();
+        state.follow = self.follow;
+        state.errors = self.command_errors.clone();
+
+        return state;
+    }
+
+    async fn send_state(&mut self) -> Result<(), ViewError> {
+        let state = self.generate_state().await;
+        self.state_sender
+            .send(state)
+            .map_err(|_| ViewError::from("state channel error"))?;
+        Ok(())
     }
 }
