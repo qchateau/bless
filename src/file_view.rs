@@ -3,11 +3,12 @@ use crate::{
     file_buffer::{make_file_buffer, FileBuffer},
     utils::{nth_or_last, InfiniteLoopBreaker},
 };
+use num_integer::div_ceil;
 use regex::Regex;
 use std::{
     io,
     ops::Range,
-    str::{from_utf8, from_utf8_unchecked},
+    str::{from_utf8, from_utf8_unchecked, Lines},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -55,14 +56,33 @@ impl FileView {
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    pub async fn view(&mut self, nlines: u64) -> Result<&str, ViewError> {
-        eprintln!("building view for {} lines", nlines);
+    pub async fn view(
+        &mut self,
+        nlines: usize,
+        ncols: Option<usize>,
+    ) -> Result<Vec<&str>, ViewError> {
+        eprintln!("building view for {}x{}", nlines, ncols.unwrap_or(0));
         let mut eof = false;
 
         loop {
-            if let Some((offset, _)) = self.current_view().match_indices('\n').nth(nlines as usize)
-            {
-                return Ok(&self.current_view()[..offset]);
+            let mut in_lines = 0;
+            let mut out_lines = 0;
+
+            for line in self.current_view().lines() {
+                if ncols.is_some() {
+                    out_lines += div_ceil(line.chars().count(), ncols.unwrap());
+                } else {
+                    out_lines += 1;
+                }
+
+                if out_lines > nlines {
+                    return Ok(self.current_view().lines().take(in_lines).collect());
+                }
+
+                in_lines += 1;
+                if out_lines == nlines {
+                    return Ok(self.current_view().lines().take(in_lines).collect());
+                }
             }
 
             if !eof {
@@ -75,7 +95,7 @@ impl FileView {
 
             // FIXME: optimize
             if let Err(_) = self.up(1).await {
-                return Ok(self.current_view());
+                return Ok(self.current_view().lines().collect());
             }
         }
     }

@@ -17,3 +17,4 @@ human_bytes = { version = "0.3", features = ["fast"] }
 futures = "0.3.21"
 async-trait = "0.1.52"
 tokio = { version = "1.16.1", features = ["full"] }
+num-integer = "0.1.44"

@@ -20,7 +20,7 @@ pub enum Command {
     SearchDownNext(String),
     SearchUp(String),
     Follow(bool),
-    Resize(u64),
+    Resize(Option<usize>, usize),
 }
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub struct BackendState {
     pub errors: Vec<String>,
     pub current_line: Option<i64>,
     pub offset: u64,
-    pub text: String,
+    pub text: Vec<String>,
     pub follow: bool,
 }
 
@@ -38,7 +38,7 @@ impl BackendState {
     pub fn new() -> Self {
         return Self {
             file_path: String::new(),
-            text: String::new(),
+            text: Vec::new(),
             errors: Vec::new(),
             follow: false,
             file_size: 0,
@@ -52,7 +52,8 @@ struct CommandHandler {
     command_receiver: UnboundedReceiver<Command>,
     state_sender: Sender<BackendState>,
     file_view: FileView,
-    view_size: u64,
+    view_width: Option<usize>,
+    view_height: usize,
     cancelled: Rc<AtomicBool>,
     follow: bool,
     command_errors: Vec<String>,
@@ -81,7 +82,8 @@ impl Backend {
                 command_receiver,
                 state_sender,
                 file_view,
-                view_size: 0,
+                view_width: None,
+                view_height: 0,
                 cancelled: cancelled.clone(),
                 follow: false,
                 command_errors: Vec::new(),
@@ -149,7 +151,7 @@ impl CommandHandler {
 
             if self.follow {
                 self.file_view.bottom().await;
-                self.file_view.up(self.view_size).await.ok();
+                self.file_view.up(self.view_height as u64).await.ok();
             }
 
             self.send_state().await?;
@@ -203,8 +205,9 @@ impl CommandHandler {
                 let pos = self.file_view.file_size().await as f64 * ratio;
                 self.file_view.jump_to_byte(pos as u64).await
             }
-            Command::Resize(size) => {
-                self.view_size = size;
+            Command::Resize(w, h) => {
+                self.view_width = w;
+                self.view_height = h;
                 Ok(())
             }
         };
@@ -216,16 +219,12 @@ impl CommandHandler {
         let mut state = BackendState::new();
 
         state.file_path = self.file_view.file_path().to_owned();
-        state.text = {
-            let text = match self.file_view.view(self.view_size).await {
-                Ok(x) => x,
-                Err(e) => {
-                    state.errors.push(format!("{}", e));
-                    ""
-                }
-            };
-            text.to_string()
-            // String::from_utf8_lossy(text).to_string()
+        state.text = match self.file_view.view(self.view_height, self.view_width).await {
+            Ok(x) => x.iter().map(|x| x.to_string()).collect(),
+            Err(e) => {
+                state.errors.push(format!("{}", e));
+                Vec::new()
+            }
         };
 
         state.file_size = self.file_view.file_size().await;
