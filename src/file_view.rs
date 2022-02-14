@@ -8,7 +8,7 @@ use regex::Regex;
 use std::{
     io,
     ops::Range,
-    str::{from_utf8, from_utf8_unchecked, Lines},
+    str::{from_utf8, from_utf8_unchecked},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -38,7 +38,7 @@ impl FileView {
             file_path: path,
             buffer: Box::from(buffer),
             view_offset: 0,
-            current_line: Some(0),
+            current_line: Some(1),
         });
     }
     pub async fn file_size(&self) -> u64 {
@@ -120,7 +120,7 @@ impl FileView {
                     Ok(0) => {
                         let was_at_top = self.view_offset == 0;
                         self.view_offset = 0;
-                        self.current_line = Some(0);
+                        self.current_line = Some(1);
                         if was_at_top {
                             return Err(ViewError::from("already at the top"));
                         } else {
@@ -244,21 +244,21 @@ impl FileView {
         eprintln!("jump to line {}", line);
 
         //  move to the right "side" of the file
-        if line >= 0 && (self.current_line.is_none() || self.current_line.unwrap() < 0) {
+        if line > 0 && (self.current_line.is_none() || self.current_line.unwrap() <= 0) {
             self.top().await?
-        } else if line < 0 && (self.current_line.is_none() || self.current_line.unwrap() >= 0) {
+        } else if line <= 0 && (self.current_line.is_none() || self.current_line.unwrap() > 0) {
             self.bottom().await
         }
 
-        let mut offset = line - self.current_line().unwrap();
-        if offset.abs() > line.abs() / 2 {
+        let mut offset = line - self.current_line.unwrap();
+        if offset.abs() > line.abs() {
             // shotcut, easier to reset the cursor
-            if line >= 0 {
+            if line > 0 {
                 self.top().await?;
             } else {
                 self.bottom().await;
             }
-            offset = line;
+            offset = line - self.current_line.unwrap();
         }
 
         return if offset > 0 {
@@ -276,7 +276,7 @@ impl FileView {
         self.view_offset = 0;
 
         if bytes == 0 {
-            self.current_line = Some(0);
+            self.current_line = Some(1);
             Ok(())
         } else {
             self.current_line = None;

@@ -11,7 +11,7 @@ use std::{
 use tokio::sync::{mpsc::UnboundedSender, watch::Receiver};
 use tui::{
     backend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Span, Spans, Text},
     widgets::{Block, Borders, Paragraph},
@@ -196,7 +196,7 @@ impl Frontend {
                     self.push_error("nothing to search".to_owned());
                 }
             }
-            "gg" => self.send_command(Command::JumpLine(0)),
+            "gg" => self.send_command(Command::JumpLine(1)),
             "GG" => self.send_command(Command::JumpLine(-1)),
             "j" => self.send_command(Command::MoveLine(1)),
             "J" => self.send_command(Command::MoveLine(FAST_SCROLL_LINES)),
