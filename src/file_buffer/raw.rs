@@ -72,7 +72,7 @@ impl super::FileBuffer for FileBuffer {
     async fn load_next(&mut self) -> std::io::Result<usize> {
         let size_before = self.buffer.len();
         let read_offset = self.range().end;
-        self.buffer.resize(size_before + BUFFER_SIZE);
+        self.buffer.resize_back(size_before + BUFFER_SIZE);
 
         let buf = self.buffer.as_mut_slice();
         let buf_start = buf.len() - BUFFER_SIZE;
@@ -84,7 +84,7 @@ impl super::FileBuffer for FileBuffer {
             Err(e) => Err(e),
         };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
-        self.buffer.resize(size_before + read_size);
+        self.buffer.resize_back(size_before + read_size);
         return read_size_res;
     }
     fn shrink_to(&mut self, range: Range<u64>) {
@@ -100,7 +100,7 @@ impl super::FileBuffer for FileBuffer {
 
         let extra_end = self.range().end.saturating_sub(inter.end) as usize;
         let extra_start = inter.start.saturating_sub(self.range().start) as usize;
-        self.buffer.resize(self.buffer.len() - extra_end);
+        self.buffer.resize_back(self.buffer.len() - extra_end);
         self.buffer.resize_front(self.buffer.len() - extra_start);
         self.buffer_offset = inter.start;
         self.buffer.shrink_to(inter.count());

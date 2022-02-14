@@ -38,7 +38,7 @@ impl<T> DeVec<T> {
 }
 
 impl<T: Default + Clone> DeVec<T> {
-    pub fn resize(&mut self, size: usize) {
+    pub fn resize_back(&mut self, size: usize) {
         self.data.resize(size + self.offset, T::default());
     }
     pub fn resize_front(&mut self, size: usize) {
