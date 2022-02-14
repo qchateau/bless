@@ -91,10 +91,8 @@ impl FileView {
                     Ok(_) => (),
                     Err(e) => return Err(ViewError::from(e.to_string())),
                 }
-            }
-
-            // FIXME: optimize
-            if let Err(_) = self.up(1).await {
+            } else if let Err(_) = self.up(1).await {
+                // FIXME: optimize
                 return Ok(self.current_view().lines().collect());
             }
         }
@@ -163,7 +161,6 @@ impl FileView {
             match self.load_prev().await {
                 Ok(0) => break ViewError::from("no match found"),
                 Err(e) => break ViewError::from(e.to_string()),
-
                 Ok(_) => (),
             }
 
