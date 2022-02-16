@@ -13,8 +13,8 @@ use std::{
 };
 
 const MATCH_WINDOW: usize = 0x1000;
-const SHRINK_BUFFER_SIZE: usize = 0x100000;
-const MAYBE_SHRINK_THRESHOLD: usize = 2 * SHRINK_BUFFER_SIZE;
+const SHRINK_SIZE: usize = 100_000_000;
+const SHRINK_THRESHOLD: usize = 2 * SHRINK_SIZE;
 
 #[derive(Debug)]
 struct ViewState {
@@ -169,7 +169,7 @@ impl FileView {
             }
         };
 
-        self.load_state(&state);
+        self.load_state(&state)?;
         return Err(err);
     }
     pub async fn down(&mut self, mut lines: u64) -> Result<(), ViewError> {
@@ -237,7 +237,7 @@ impl FileView {
             }
         };
 
-        self.load_state(&state);
+        self.load_state(&state)?;
         return Err(err);
     }
     pub async fn jump_to_line(&mut self, line: i64) -> Result<(), ViewError> {
@@ -247,7 +247,7 @@ impl FileView {
         if line > 0 && (self.current_line.is_none() || self.current_line.unwrap() <= 0) {
             self.top().await?
         } else if line <= 0 && (self.current_line.is_none() || self.current_line.unwrap() > 0) {
-            self.bottom().await
+            self.bottom().await?
         }
 
         let mut offset = line - self.current_line.unwrap();
@@ -256,7 +256,7 @@ impl FileView {
             if line > 0 {
                 self.top().await?;
             } else {
-                self.bottom().await;
+                self.bottom().await?;
             }
             offset = line - self.current_line.unwrap();
         }
@@ -272,7 +272,9 @@ impl FileView {
     pub async fn jump_to_byte(&mut self, bytes: u64) -> Result<(), ViewError> {
         eprintln!("jump to byte {}", bytes);
 
-        self.buffer.jump(bytes);
+        self.buffer
+            .jump(bytes)
+            .map_err(|e| ViewError::from(e.to_string()))?;
         self.view_offset = 0;
 
         if bytes == 0 {
@@ -288,12 +290,15 @@ impl FileView {
 
         self.jump_to_byte(0).await
     }
-    pub async fn bottom(&mut self) {
+    pub async fn bottom(&mut self) -> Result<(), ViewError> {
         eprintln!("jump to bottom");
 
-        self.buffer.jump(self.buffer.total_size().await - 1);
+        self.buffer
+            .jump(self.buffer.total_size().await - 1)
+            .map_err(|e| ViewError::from(e.to_string()))?;
         self.view_offset = 0;
         self.current_line = Some(0);
+        Ok(())
     }
     fn current_view(&self) -> &str {
         let slice = self.buffer.data().get(self.view_offset..).unwrap_or(b"");
@@ -310,15 +315,16 @@ impl FileView {
         }
     }
     fn maybe_shrink(&mut self) {
-        if self.buffer.range().count() > MAYBE_SHRINK_THRESHOLD {
+        if self.buffer.data().len() > SHRINK_THRESHOLD {
             self.shrink()
         }
     }
     fn shrink(&mut self) {
-        let start = self.view_offset as u64 + self.buffer.range().start;
-        let end = start + SHRINK_BUFFER_SIZE as u64;
-        self.buffer.shrink_to(Range { start, end });
-        self.view_offset = 0;
+        let start = self.view_offset as u64;
+        let end = start + SHRINK_SIZE as u64;
+        let shrinked = self.buffer.shrink_to(Range { start, end });
+        self.view_offset = (start - shrinked.start) as usize;
+        eprintln!("new offset: {}", self.view_offset);
     }
     async fn load_next(&mut self) -> io::Result<usize> {
         let load_size = self.buffer.load_next().await?;
@@ -340,9 +346,12 @@ impl FileView {
             buffer_pos: self.buffer.range().start,
         };
     }
-    fn load_state(&mut self, state: &ViewState) {
+    fn load_state(&mut self, state: &ViewState) -> Result<(), ViewError> {
         self.view_offset = state.view_offset;
         self.current_line = state.current_line;
-        self.buffer.jump(state.buffer_pos);
+        self.buffer
+            .jump(state.buffer_pos)
+            .map_err(|e| ViewError::from(e.to_string()))?;
+        Ok(())
     }
 }

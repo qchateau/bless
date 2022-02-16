@@ -1,7 +1,7 @@
 use super::devec::DeVec;
 use async_trait::async_trait;
 use std::{
-    cmp::{max, min},
+    cmp::min,
     fs::File,
     io::{self, Read, Seek},
     ops::Range,
@@ -39,14 +39,17 @@ impl super::FileBuffer for FileBuffer {
             end: self.buffer_offset + self.buffer.len() as u64,
         };
     }
-    fn jump(&mut self, bytes: u64) {
+    fn jump(&mut self, bytes: u64) -> io::Result<u64> {
         self.buffer.clear();
         self.buffer_offset = bytes;
+        return Ok(bytes);
     }
     async fn total_size(&self) -> u64 {
         return self.file.metadata().unwrap().len();
     }
     async fn load_prev(&mut self) -> io::Result<usize> {
+        yield_now().await;
+
         let try_read_size = min(self.buffer_offset as usize, BUFFER_SIZE);
         self.buffer.resize_front(self.buffer.len() + try_read_size);
 
@@ -55,7 +58,6 @@ impl super::FileBuffer for FileBuffer {
 
         let read_offset = self.buffer_offset - try_read_size as u64;
 
-        yield_now().await;
         let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
             Ok(_) => self.file.read(buf),
             Err(e) => Err(e),
@@ -70,6 +72,8 @@ impl super::FileBuffer for FileBuffer {
         return read_size_res;
     }
     async fn load_next(&mut self) -> std::io::Result<usize> {
+        yield_now().await;
+
         let size_before = self.buffer.len();
         let read_offset = self.range().end;
         self.buffer.resize_back(size_before + BUFFER_SIZE);
@@ -78,7 +82,6 @@ impl super::FileBuffer for FileBuffer {
         let buf_start = buf.len() - BUFFER_SIZE;
         let buf = &mut buf[buf_start..];
 
-        yield_now().await;
         let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
             Ok(_) => self.file.read(buf),
             Err(e) => Err(e),
@@ -87,22 +90,14 @@ impl super::FileBuffer for FileBuffer {
         self.buffer.resize_back(size_before + read_size);
         return read_size_res;
     }
-    fn shrink_to(&mut self, range: Range<u64>) {
-        let inter = Range {
-            start: max(self.range().start, range.start),
-            end: min(self.range().end, range.end),
-        };
-        if inter.end <= inter.start {
-            self.buffer_offset = inter.start;
-            self.buffer.clear();
-            return;
-        }
+    fn shrink_to(&mut self, range: Range<u64>) -> Range<u64> {
+        assert!(range.start <= range.end && range.end <= self.data().len() as u64);
 
-        let extra_end = self.range().end.saturating_sub(inter.end) as usize;
-        let extra_start = inter.start.saturating_sub(self.range().start) as usize;
-        self.buffer.resize_back(self.buffer.len() - extra_end);
-        self.buffer.resize_front(self.buffer.len() - extra_start);
-        self.buffer_offset = inter.start;
-        self.buffer.shrink_to(inter.count());
+        self.buffer.resize_back(range.end as usize);
+        self.buffer
+            .resize_front(self.buffer.len() - range.start as usize);
+        self.buffer_offset += range.start;
+        self.buffer.shrink_to(self.buffer.len());
+        return range;
     }
 }

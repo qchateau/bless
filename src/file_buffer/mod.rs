@@ -3,21 +3,32 @@ mod devec;
 pub mod raw;
 
 use async_trait::async_trait;
-use std::{fmt::Debug, io::Result};
+use std::{fmt::Debug, io::Result, ops::Range};
 
 #[async_trait]
 pub trait FileBuffer: Debug {
+    // slice to the file data
     fn data(&self) -> &[u8];
-    fn range(&self) -> std::ops::Range<u64>;
-    fn jump(&mut self, bytes: u64);
+    // range of the data on file, the size may be different
+    // from the data size for compressed files
+    fn range(&self) -> Range<u64>;
+    // jump to a byte offset in the file
+    // the actual jump position may be diffent, and is returned
+    fn jump(&mut self, bytes: u64) -> Result<u64>;
+    // total size of the file
     async fn total_size(&self) -> u64;
+    // load more data at the front
     async fn load_prev(&mut self) -> Result<usize>;
+    // load more data at the back
     async fn load_next(&mut self) -> Result<usize>;
-    fn shrink_to(&mut self, range: std::ops::Range<u64>);
+    // shring the buffer around a range of data
+    // so that data[range] is accessible
+    // returns the actual ranged that the buffer shrinked to
+    fn shrink_to(&mut self, range: Range<u64>) -> Range<u64>;
 }
 
 pub async fn make_file_buffer(path: &str) -> Result<Box<dyn FileBuffer>> {
-    let bz = bzip2::FileBuffer::new(path).await?;
+    let bz = bzip2::Bz2FileBuffer::new(path).await?;
     if bz.is_valid() {
         return Ok(Box::from(bz));
     }

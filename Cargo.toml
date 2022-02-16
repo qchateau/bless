@@ -18,3 +18,4 @@ futures = "0.3.21"
 async-trait = "0.1.52"
 tokio = { version = "1.16.1", features = ["full"] }
 num-integer = "0.1.44"
+memmap = "0.7.0"
