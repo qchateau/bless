@@ -1,5 +1,6 @@
 use regex::Regex;
 use std::{
+    collections::HashMap,
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -9,7 +10,10 @@ use tokio::{
     time::{self, Duration},
 };
 
-use crate::{errors::ViewError, file_view::FileView};
+use crate::{
+    errors::ViewError,
+    file_view::{FileView, ViewState},
+};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Command {
@@ -21,6 +25,8 @@ pub enum Command {
     SearchUp(String),
     Follow(bool),
     Resize(Option<usize>, usize),
+    SaveMark(String),
+    LoadMark(String),
 }
 
 #[derive(Clone)]
@@ -32,6 +38,7 @@ pub struct BackendState {
     pub offset: u64,
     pub text: Vec<String>,
     pub follow: bool,
+    pub marks: Vec<String>,
 }
 
 impl BackendState {
@@ -44,6 +51,7 @@ impl BackendState {
             file_size: 0,
             current_line: None,
             offset: 0,
+            marks: Vec::new(),
         };
     }
 }
@@ -55,6 +63,7 @@ struct CommandHandler {
     view_width: Option<usize>,
     view_height: usize,
     cancelled: Rc<AtomicBool>,
+    marks: HashMap<String, ViewState>,
     follow: bool,
     command_errors: Vec<String>,
 }
@@ -87,6 +96,7 @@ impl Backend {
                 cancelled: cancelled.clone(),
                 follow: false,
                 command_errors: Vec::new(),
+                marks: HashMap::new(),
             },
             cancel_handler: CancelHandler {
                 cancel_receiver,
@@ -162,8 +172,7 @@ impl CommandHandler {
         let res = match command {
             Command::Follow(follow) => {
                 self.follow = follow;
-                self.file_view.bottom().await;
-                Ok(())
+                self.file_view.bottom().await
             }
             Command::SearchDown(pattern) => {
                 self.file_view
@@ -210,6 +219,17 @@ impl CommandHandler {
                 self.view_height = h;
                 Ok(())
             }
+            Command::SaveMark(name) => {
+                self.marks.insert(name, self.file_view.save_state());
+                Ok(())
+            }
+            Command::LoadMark(name) => {
+                if let Some(state) = self.marks.get(&name) {
+                    self.file_view.load_state(state)
+                } else {
+                    Err(ViewError::from(format!("unknown mark: {}", name)))
+                }
+            }
         };
 
         return res;
@@ -232,6 +252,7 @@ impl CommandHandler {
         state.offset = self.file_view.offset();
         state.follow = self.follow;
         state.errors = self.command_errors.clone();
+        state.marks = self.marks.keys().map(|x| x.clone()).collect();
 
         return state;
     }

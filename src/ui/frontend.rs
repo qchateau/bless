@@ -202,6 +202,12 @@ impl Frontend {
             "J" => self.send_command(Command::MoveLine(FAST_SCROLL_LINES)),
             "k" => self.send_command(Command::MoveLine(-1)),
             "K" => self.send_command(Command::MoveLine(-FAST_SCROLL_LINES)),
+            x if x.starts_with("m") && x.len() > 1 => {
+                self.send_command(Command::SaveMark(String::from(&x[1..2])))
+            }
+            x if x.starts_with("'") && x.len() > 1 => {
+                self.send_command(Command::LoadMark(String::from(&x[1..2])))
+            }
             x if x.to_lowercase().ends_with("gg") => {
                 if let Ok(line) = x.get(..x.len() - 2).unwrap().parse::<i64>() {
                     self.send_command(Command::JumpLine(line))
@@ -298,6 +304,9 @@ impl Frontend {
         }
         if self.wrap {
             flags.push("Wrap".to_owned())
+        }
+        if !back.marks.is_empty() {
+            flags.push(format!("Marks: {}", back.marks.join("")));
         }
         if let Some(re) = &self.search {
             flags.push(format!("/{}", re.to_string()));
