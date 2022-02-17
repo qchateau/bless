@@ -3,6 +3,7 @@ use crate::{
     file_buffer::{make_file_buffer, FileBuffer},
     utils::{nth_or_last, InfiniteLoopBreaker},
 };
+use human_bytes::human_bytes;
 use num_integer::div_ceil;
 use regex::Regex;
 use std::{
@@ -13,8 +14,7 @@ use std::{
 };
 
 const MATCH_WINDOW: usize = 0x1000;
-const SHRINK_SIZE: usize = 100_000_000;
-const SHRINK_THRESHOLD: usize = 2 * SHRINK_SIZE;
+const SHRINK_THRESHOLD: usize = 1_000_000;
 
 #[derive(Debug)]
 pub struct ViewState {
@@ -92,7 +92,6 @@ impl FileView {
                     Err(e) => return Err(ViewError::from(e.to_string())),
                 }
             } else if let Err(_) = self.up(1).await {
-                // FIXME: optimize
                 return Ok(self.current_view().lines().collect());
             }
         }
@@ -329,28 +328,40 @@ impl FileView {
             Err(e) => unsafe { from_utf8_unchecked(&slice[..e.valid_up_to()]) },
         }
     }
-    fn maybe_shrink(&mut self) {
-        if self.buffer.data().len() > SHRINK_THRESHOLD {
-            self.shrink()
+    fn maybe_shrink(&mut self, range: Range<u64>) {
+        let size_before = self.buffer.data().len();
+        if size_before < SHRINK_THRESHOLD {
+            return;
         }
+        let shrinked = self.buffer.shrink_to(range.clone());
+        self.view_offset = (range.start - shrinked.start) as usize;
+        eprintln!(
+            "shriked: {}, size: {}, new offset: {}",
+            human_bytes((size_before - self.buffer.data().len()) as f64),
+            human_bytes(self.buffer.data().len() as f64),
+            self.view_offset
+        );
     }
-    fn shrink(&mut self) {
+    fn maybe_shrink_left(&mut self) {
         let start = self.view_offset as u64;
-        let end = start + SHRINK_SIZE as u64;
-        let shrinked = self.buffer.shrink_to(Range { start, end });
-        self.view_offset = (start - shrinked.start) as usize;
-        eprintln!("new offset: {}", self.view_offset);
+        let end = self.buffer.data().len() as u64;
+        self.maybe_shrink(Range { start, end });
+    }
+    fn maybe_shrink_right(&mut self) {
+        let start = 0;
+        let end = self.view_offset as u64;
+        self.maybe_shrink(Range { start, end });
     }
     async fn load_next(&mut self) -> io::Result<usize> {
         let load_size = self.buffer.load_next().await?;
-        self.maybe_shrink();
+        self.maybe_shrink_left();
         eprintln!("loaded {} next bytes", load_size);
         return Ok(load_size);
     }
     async fn load_prev(&mut self) -> io::Result<usize> {
         let load_size = self.buffer.load_prev().await?;
         self.view_offset += load_size;
-        self.maybe_shrink();
+        self.maybe_shrink_right();
         eprintln!("loaded {} previous bytes", load_size);
         return Ok(load_size);
     }
