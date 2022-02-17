@@ -1,14 +1,19 @@
 use super::devec::DeVec;
 use async_trait::async_trait;
+use memmap::{Mmap, MmapOptions};
+use regex::bytes::Regex;
 use std::{
     cmp::min,
     fs::File,
-    io::{self, Read, Seek},
+    io::{self, Error, ErrorKind, Read, Result, Seek},
     ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
 };
 use tokio::task::yield_now;
 
-const BUFFER_SIZE: usize = 0xffff;
+const BUFFER_SIZE: usize = 0x10000;
+const FIND_WINDOW: usize = 0x100000;
+const FIND_OVERLAP: usize = 0x1000;
 
 #[derive(Debug)]
 pub struct FileBuffer {
@@ -18,13 +23,16 @@ pub struct FileBuffer {
 }
 
 impl FileBuffer {
-    pub async fn new(path: &str) -> Result<Self, io::Error> {
+    pub async fn new(path: &str) -> Result<Self> {
         let file = File::open(path)?;
         return Ok(Self {
             buffer_offset: 0,
             buffer: DeVec::new(),
             file,
         });
+    }
+    fn mmap(&self) -> Result<Mmap> {
+        return unsafe { MmapOptions::new().map(&self.file) };
     }
 }
 
@@ -89,6 +97,56 @@ impl super::FileBuffer for FileBuffer {
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
         self.buffer.resize_back(size_before + read_size);
         return read_size_res;
+    }
+    async fn find(&mut self, re: &Regex, cancelled: &AtomicBool) -> io::Result<Option<Range<u64>>> {
+        let mmap = self.mmap()?;
+        let mut begin = self.buffer_offset as usize;
+        let mut end = min(begin + FIND_WINDOW, mmap.len());
+        loop {
+            if let Some(m) = re.find(&mmap[begin..end]) {
+                return Ok(Some(Range {
+                    start: (begin + m.range().start) as u64,
+                    end: (begin + m.range().end) as u64,
+                }));
+            }
+            if end == mmap.len() {
+                break;
+            }
+            begin = end - FIND_OVERLAP;
+            end = min(begin + FIND_WINDOW, mmap.len());
+            yield_now().await;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Error::from(ErrorKind::Interrupted));
+            }
+        }
+        return Ok(None);
+    }
+    async fn rfind(
+        &mut self,
+        re: &Regex,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Range<u64>>> {
+        let mmap = self.mmap()?;
+        let mut end = self.buffer_offset as usize;
+        let mut begin = end.saturating_sub(FIND_WINDOW);
+        loop {
+            if let Some(m) = re.find_iter(&mmap[begin..end]).last() {
+                return Ok(Some(Range {
+                    start: (begin + m.range().start) as u64,
+                    end: (begin + m.range().end) as u64,
+                }));
+            }
+            if begin == 0 {
+                break;
+            }
+            end = begin + FIND_OVERLAP;
+            begin = end.saturating_sub(FIND_WINDOW);
+            yield_now().await;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Error::from(ErrorKind::Interrupted));
+            }
+        }
+        return Ok(None);
     }
     fn shrink_to(&mut self, range: Range<u64>) -> Range<u64> {
         assert!(range.start <= range.end && range.end <= self.data().len() as u64);

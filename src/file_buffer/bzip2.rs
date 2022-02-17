@@ -8,9 +8,9 @@ use std::{
     collections::VecDeque,
     fmt,
     fs::File,
-    io,
-    io::{Read, Result},
+    io::{Error, ErrorKind, Read, Result},
     ops::Range,
+    sync::atomic::AtomicBool,
     vec::Vec,
 };
 use tokio::task::yield_now;
@@ -43,7 +43,7 @@ impl fmt::Debug for Bz2FileBuffer {
 }
 
 impl Bz2FileBuffer {
-    pub async fn new(path: &str) -> io::Result<Self> {
+    pub async fn new(path: &str) -> Result<Self> {
         let mut file = File::open(path)?;
         let mut header = vec![0u8; 4];
         let magic_re: Regex = Regex::new(r"\x31\x41\x59\x26\x53\x59").unwrap();
@@ -148,7 +148,7 @@ impl FileBuffer for Bz2FileBuffer {
                 .unwrap_or(self.header.len() as u64),
         };
     }
-    fn jump(&mut self, byte: u64) -> io::Result<u64> {
+    fn jump(&mut self, byte: u64) -> Result<u64> {
         let block = self.decode_block(Range {
             start: self.rfind_block_from(byte as usize)?,
             end: self.find_block_from(byte as usize)?,
@@ -162,7 +162,7 @@ impl FileBuffer for Bz2FileBuffer {
     async fn total_size(&self) -> u64 {
         return self.file.metadata().unwrap().len();
     }
-    async fn load_next(&mut self) -> std::io::Result<usize> {
+    async fn load_next(&mut self) -> Result<usize> {
         eprintln!("load next");
         yield_now().await;
 
@@ -180,7 +180,7 @@ impl FileBuffer for Bz2FileBuffer {
         self.blocks.push_back(block);
         return Ok(self.data().len() - size_before);
     }
-    async fn load_prev(&mut self) -> std::io::Result<usize> {
+    async fn load_prev(&mut self) -> Result<usize> {
         eprintln!("load previous");
         yield_now().await;
 
@@ -199,6 +199,12 @@ impl FileBuffer for Bz2FileBuffer {
         self.decoded = new;
         self.blocks.push_front(block);
         return Ok(self.data().len() - size_before);
+    }
+    async fn find(&mut self, _re: &Regex, _cancelled: &AtomicBool) -> Result<Option<Range<u64>>> {
+        return Err(Error::from(ErrorKind::Unsupported));
+    }
+    async fn rfind(&mut self, _re: &Regex, _cancelled: &AtomicBool) -> Result<Option<Range<u64>>> {
+        return Err(Error::from(ErrorKind::Unsupported));
     }
     fn shrink_to(&mut self, range: Range<u64>) -> Range<u64> {
         assert!(range.start <= range.end && range.end <= self.data().len() as u64);

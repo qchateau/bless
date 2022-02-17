@@ -3,7 +3,8 @@ mod devec;
 pub mod raw;
 
 use async_trait::async_trait;
-use std::{fmt::Debug, io::Result, ops::Range};
+use regex::bytes::Regex;
+use std::{fmt::Debug, io::Result, ops::Range, sync::atomic::AtomicBool};
 
 #[async_trait]
 pub trait FileBuffer: Debug {
@@ -21,6 +22,10 @@ pub trait FileBuffer: Debug {
     async fn load_prev(&mut self) -> Result<usize>;
     // load more data at the back
     async fn load_next(&mut self) -> Result<usize>;
+    // find a pattern forward
+    async fn find(&mut self, re: &Regex, cancelled: &AtomicBool) -> Result<Option<Range<u64>>>;
+    // find a pattern backwards
+    async fn rfind(&mut self, re: &Regex, cancelled: &AtomicBool) -> Result<Option<Range<u64>>>;
     // shring the buffer around a range of data
     // so that data[range] is accessible
     // returns the actual ranged that the buffer shrinked to

@@ -5,9 +5,10 @@ use crate::{
 };
 use human_bytes::human_bytes;
 use num_integer::div_ceil;
-use regex::Regex;
+use regex::{bytes, Regex};
 use std::{
     io,
+    io::ErrorKind,
     ops::Range,
     str::{from_utf8, from_utf8_unchecked},
     sync::atomic::{AtomicBool, Ordering},
@@ -32,7 +33,7 @@ pub struct FileView {
 }
 
 impl FileView {
-    pub async fn new(path: String) -> Result<Self, io::Error> {
+    pub async fn new(path: String) -> io::Result<Self> {
         let buffer = make_file_buffer(&path).await?;
         return Ok(Self {
             file_path: path,
@@ -91,8 +92,11 @@ impl FileView {
                     Ok(_) => (),
                     Err(e) => return Err(ViewError::from(e.to_string())),
                 }
-            } else if let Err(_) = self.up(1).await {
-                return Ok(self.current_view().lines().collect());
+            } else {
+                let missing = nlines - out_lines;
+                self.up(missing as u64).await.ok();
+                let rlines: Vec<&str> = self.current_view().lines().rev().take(nlines).collect();
+                return Ok(rlines.into_iter().rev().collect());
             }
         }
     }
@@ -143,6 +147,30 @@ impl FileView {
         eprintln!("up to line matching {}", regex.as_str());
 
         let state = self.save_state();
+
+        let bytes_re = bytes::Regex::new(regex.as_str()).unwrap();
+        match self.buffer.rfind(&bytes_re, cancelled).await {
+            // fast path: the buffer implements find
+            Ok(maybe_match) => {
+                if let Some(m) = maybe_match {
+                    return self.jump_to_byte(m.start).await;
+                } else {
+                    self.load_state(&state)?;
+                    return Err(ViewError::from("no match found"));
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {
+                return Err(ViewError::from("cancelled"));
+            }
+            // the buffer doesn't implement find, do it ourself
+            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                eprintln!("no fast implementation, using default impl");
+            }
+            // the buffer does implement find, but encountered and error
+            Err(e) => {
+                return Err(ViewError::from(e.to_string()));
+            }
+        }
 
         let err = loop {
             let m = regex.find_iter(self.above_view()).last();
@@ -210,6 +238,30 @@ impl FileView {
         let state = self.save_state();
         if skip_current {
             self.down(1).await.ok();
+        }
+
+        let bytes_re = bytes::Regex::new(regex.as_str()).unwrap();
+        match self.buffer.find(&bytes_re, cancelled).await {
+            // fast path: the buffer implements find
+            Ok(maybe_match) => {
+                if let Some(m) = maybe_match {
+                    return self.jump_to_byte(m.start).await;
+                } else {
+                    self.load_state(&state)?;
+                    return Err(ViewError::from("no match found"));
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {
+                return Err(ViewError::from("cancelled"));
+            }
+            // the buffer doesn't implement find, do it ourself
+            Err(e) if e.kind() == ErrorKind::Unsupported => {
+                eprintln!("no fast implementation, using default impl");
+            }
+            // the buffer does implement find, but encountered and error
+            Err(e) => {
+                return Err(ViewError::from(e.to_string()));
+            }
         }
 
         let err = loop {
