@@ -48,8 +48,16 @@ impl<T: Default + Clone> DeVec<T> {
             let missing = extra.saturating_sub(self.offset);
             self.offset = self.offset.saturating_sub(extra);
             if missing > 0 {
-                self.data.resize(self.data.len() + missing, T::default());
-                self.data.rotate_right(missing);
+                let new_size =
+                    2usize.pow(((self.data.len() + missing) as f64).log2().ceil() as u32);
+                let extra_alloc = new_size - (self.data.len() + missing);
+
+                let mut new_vec = Vec::new();
+                new_vec.reserve(new_size);
+                new_vec.resize(extra_alloc + missing, T::default());
+                new_vec.append(&mut self.data);
+                self.offset = extra_alloc;
+                self.data = new_vec;
             }
         } else {
             self.offset += len - size;
