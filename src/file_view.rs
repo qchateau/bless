@@ -63,7 +63,6 @@ impl FileView {
         ncols: Option<usize>,
     ) -> Result<Vec<&str>, ViewError> {
         eprintln!("building view for {}x{}", nlines, ncols.unwrap_or(0));
-        let mut eof = false;
 
         loop {
             let mut in_lines = 0;
@@ -86,17 +85,29 @@ impl FileView {
                 }
             }
 
-            if !eof {
-                match self.load_next().await {
-                    Ok(0) => eof = true,
-                    Ok(_) => (),
-                    Err(e) => return Err(ViewError::from(e.to_string())),
+            match self.load_next().await {
+                Ok(0) => break,
+                Ok(_) => (),
+                Err(e) => return Err(ViewError::from(e.to_string())),
+            }
+        }
+
+        loop {
+            if self.up(1).await.is_err() {
+                return Ok(self.current_view().lines().collect());
+            }
+            let out_lines = self.current_view().lines().fold(0, |acc, line| {
+                if ncols.is_some() {
+                    acc + div_ceil(line.chars().count(), ncols.unwrap())
+                } else {
+                    acc + 1
                 }
-            } else {
-                let missing = nlines - out_lines;
-                self.up(missing as u64).await.ok();
-                let rlines: Vec<&str> = self.current_view().lines().rev().take(nlines).collect();
-                return Ok(rlines.into_iter().rev().collect());
+            });
+            if out_lines >= nlines {
+                if out_lines > nlines {
+                    self.down(1).await.ok();
+                }
+                return Ok(self.current_view().lines().collect());
             }
         }
     }
