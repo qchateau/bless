@@ -6,6 +6,7 @@ use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_async_std::Signals;
 use std::{
     cell::RefCell,
+    cmp::min,
     io::{self, Stdout},
 };
 use tokio::sync::{mpsc::UnboundedSender, watch::Receiver};
@@ -33,6 +34,7 @@ pub struct Frontend {
     wrap: bool,
     stop: bool,
     follow: bool,
+    right_offset: usize,
     last_sent_resize: Option<Command>,
     command_sender: RefCell<UnboundedSender<Command>>,
     cancel_sender: RefCell<UnboundedSender<()>>,
@@ -52,6 +54,7 @@ impl Frontend {
             command: String::new(),
             errors: RefCell::from(Vec::new()),
             last_sent_resize: None,
+            right_offset: 0,
             search: None,
             wrap: true,
             stop: false,
@@ -148,6 +151,22 @@ impl Frontend {
                 code: KeyCode::Up, ..
             } => self.send_command(Command::MoveLine(-1)),
             KeyEvent {
+                code: KeyCode::Right,
+                modifiers: KeyModifiers::SHIFT,
+            } => self.right_offset += FAST_SCROLL_LINES as usize,
+            KeyEvent {
+                code: KeyCode::Right,
+                ..
+            } => self.right_offset += 1,
+            KeyEvent {
+                code: KeyCode::Left,
+                modifiers: KeyModifiers::SHIFT,
+            } => self.right_offset = self.right_offset.saturating_sub(FAST_SCROLL_LINES as usize),
+            KeyEvent {
+                code: KeyCode::Left,
+                ..
+            } => self.right_offset = self.right_offset.saturating_sub(1),
+            KeyEvent {
                 code: KeyCode::PageDown,
                 ..
             } => self.send_command(Command::MoveLine(height)),
@@ -177,7 +196,10 @@ impl Frontend {
 
         match self.command.as_str() {
             "q" => self.stop = true,
-            "w" => self.wrap = !self.wrap,
+            "w" => {
+                self.wrap = !self.wrap;
+                self.right_offset = 0;
+            }
             "f" => {
                 self.follow = !self.follow;
                 self.send_command(Command::Follow(self.follow));
@@ -202,6 +224,10 @@ impl Frontend {
             "J" => self.send_command(Command::MoveLine(FAST_SCROLL_LINES)),
             "k" => self.send_command(Command::MoveLine(-1)),
             "K" => self.send_command(Command::MoveLine(-FAST_SCROLL_LINES)),
+            "l" => self.right_offset += 1,
+            "L" => self.right_offset += FAST_SCROLL_LINES as usize,
+            "h" => self.right_offset = self.right_offset.saturating_sub(1),
+            "H" => self.right_offset = self.right_offset.saturating_sub(FAST_SCROLL_LINES as usize),
             x if x.starts_with("m") && x.len() > 1 => {
                 self.send_command(Command::SaveMark(String::from(&x[1..2])))
             }
@@ -260,10 +286,18 @@ impl Frontend {
 
             for mut line in back.text.iter().map(|x| x.as_str()) {
                 let lines_before = lines.len();
+                let mut offset = if self.wrap { 0 } else { self.right_offset };
                 let mut spans = Vec::new();
 
                 macro_rules! handle_line {
                     ($data:expr, $style:expr) => {
+                        #[allow(unused_assignments)]
+                        if offset > 0 {
+                            let off = min(offset, $data.len());
+                            $data = &$data[off..];
+                            offset -= off;
+                        }
+
                         if self.wrap {
                             while let Some((char_pos, _)) = $data.char_indices().nth(
                                 text_width - spans.iter().fold(0, |acc, x: &Span| acc + x.width()),
