@@ -33,7 +33,7 @@ pub enum Command {
 pub struct BackendState {
     pub file_path: String,
     pub file_size: u64,
-    pub errors: Vec<String>,
+    pub errors: Vec<ViewError>,
     pub current_line: Option<i64>,
     pub offset: u64,
     pub text: Vec<String>,
@@ -65,7 +65,7 @@ struct CommandHandler {
     cancelled: Rc<AtomicBool>,
     marks: HashMap<String, ViewState>,
     follow: bool,
-    command_errors: Vec<String>,
+    command_errors: Vec<ViewError>,
 }
 
 struct CancelHandler {
@@ -118,7 +118,7 @@ impl CancelHandler {
         loop {
             match self.cancel_receiver.recv().await {
                 Some(_) => self.cancelled.store(true, Ordering::Release),
-                None => return Err(ViewError::from("cancel channel error")),
+                None => return Err(ViewError::Other("cancel channel error".to_string())),
             }
         }
     }
@@ -142,12 +142,12 @@ impl CommandHandler {
                  msg = self.command_receiver.recv() => {
                     let command = match msg {
                         Some(command) => command,
-                        None => return Err(ViewError::from("command channel error")),
+                        None => return Err(ViewError::Other("command channel error".to_string())),
                     };
 
                     self.command_errors.clear();
                     if let Err(e) = self.handle_command(command).await {
-                        self.command_errors.push(format!("{}", e));
+                        self.command_errors.push(e);
                     }
                 },
                 _ = time::sleep(Duration::from_millis(sleep_time_ms)) => {
@@ -177,7 +177,7 @@ impl CommandHandler {
             Command::SearchDown(pattern) => {
                 self.file_view
                     .down_to_line_matching(
-                        &Regex::new(&pattern).map_err(|_| ViewError::from("invalid regex"))?,
+                        &Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
                         false,
                         &self.cancelled,
                     )
@@ -186,7 +186,7 @@ impl CommandHandler {
             Command::SearchDownNext(pattern) => {
                 self.file_view
                     .down_to_line_matching(
-                        &Regex::new(&pattern).map_err(|_| ViewError::from("invalid regex"))?,
+                        &Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
                         true,
                         &self.cancelled,
                     )
@@ -195,7 +195,7 @@ impl CommandHandler {
             Command::SearchUp(pattern) => {
                 self.file_view
                     .up_to_line_matching(
-                        &Regex::new(&pattern).map_err(|_| ViewError::from("invalid regex"))?,
+                        &Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
                         &self.cancelled,
                     )
                     .await
@@ -227,7 +227,7 @@ impl CommandHandler {
                 if let Some(state) = self.marks.get(&name) {
                     self.file_view.load_state(state)
                 } else {
-                    Err(ViewError::from(format!("unknown mark: {}", name)))
+                    Err(ViewError::UnknownMark(name))
                 }
             }
         };
@@ -244,7 +244,7 @@ impl CommandHandler {
         state.text = match self.file_view.view(self.view_height, self.view_width).await {
             Ok(x) => x.iter().map(|x| x.to_string()).collect(),
             Err(e) => {
-                state.errors.push(format!("{}", e));
+                state.errors.push(e);
                 Vec::new()
             }
         };
@@ -259,7 +259,7 @@ impl CommandHandler {
         if offset_before > state.offset {
             // building the view shifted the view upwards,
             // we hit the EOF
-            state.errors.push("already at the bottom".to_string());
+            state.errors.push(ViewError::EOF);
         }
 
         return state;
@@ -269,7 +269,7 @@ impl CommandHandler {
         let state = self.generate_state().await;
         self.state_sender
             .send(state)
-            .map_err(|_| ViewError::from("state channel error"))?;
+            .map_err(|_| ViewError::Other("state channel error".to_string()))?;
         Ok(())
     }
 }

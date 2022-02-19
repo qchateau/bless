@@ -88,7 +88,7 @@ impl FileView {
             match self.load_next().await {
                 Ok(0) => break,
                 Ok(_) => (),
-                Err(e) => return Err(ViewError::from(e.to_string())),
+                Err(e) => return Err(ViewError::Other(e.to_string())),
             }
         }
 
@@ -114,7 +114,7 @@ impl FileView {
     pub async fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut breaker = InfiniteLoopBreaker::new(
             10,
-            ViewError::from("exceeded max number of iterations trying to go up"),
+            ViewError::Other("exceeded max number of iterations trying to go up".to_string()),
         );
 
         eprintln!("up {}", lines);
@@ -136,14 +136,14 @@ impl FileView {
                         self.view_offset = 0;
                         self.current_line = Some(1);
                         if was_at_top {
-                            return Err(ViewError::from("already at the top"));
+                            return Err(ViewError::BOF);
                         } else {
                             lines -= 1;
                         }
                     }
                     Ok(_) => (),
                     Err(e) => {
-                        return Err(ViewError::from(e.to_string()));
+                        return Err(ViewError::Other(e.to_string()));
                     }
                 },
             }
@@ -167,11 +167,11 @@ impl FileView {
                     return self.jump_to_byte(m.start).await;
                 } else {
                     self.load_state(&state)?;
-                    return Err(ViewError::from("no match found"));
+                    return Err(ViewError::NoMatchFound);
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
-                return Err(ViewError::from("cancelled"));
+                return Err(ViewError::Cancelled);
             }
             // the buffer doesn't implement find, do it ourself
             Err(e) if e.kind() == ErrorKind::Unsupported => {
@@ -179,7 +179,7 @@ impl FileView {
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
-                return Err(ViewError::from(e.to_string()));
+                return Err(ViewError::Other(e.to_string()));
             }
         }
 
@@ -197,13 +197,13 @@ impl FileView {
             self.view_offset = MATCH_WINDOW;
 
             match self.load_prev().await {
-                Ok(0) => break ViewError::from("no match found"),
-                Err(e) => break ViewError::from(e.to_string()),
+                Ok(0) => break ViewError::NoMatchFound,
+                Err(e) => break ViewError::Other(e.to_string()),
                 Ok(_) => (),
             }
 
             if cancelled.load(Ordering::Acquire) {
-                break ViewError::from("cancelled");
+                break ViewError::Cancelled;
             }
         };
 
@@ -213,7 +213,7 @@ impl FileView {
     pub async fn down(&mut self, mut lines: u64) -> Result<(), ViewError> {
         let mut breaker = InfiniteLoopBreaker::new(
             10,
-            ViewError::from("exceeded max number of iterations trying to go down"),
+            ViewError::Other("exceeded max number of iterations trying to go down".to_string()),
         );
 
         eprintln!("down {}", lines);
@@ -230,9 +230,9 @@ impl FileView {
                     breaker.reset();
                 }
                 None => match self.load_next().await {
-                    Ok(0) => return Err(ViewError::from("already at the bottom")),
+                    Ok(0) => return Err(ViewError::EOF),
                     Ok(_) => (),
-                    Err(e) => return Err(ViewError::from(e.to_string())),
+                    Err(e) => return Err(ViewError::Other(e.to_string())),
                 },
             }
         }
@@ -259,11 +259,11 @@ impl FileView {
                     return self.jump_to_byte(m.start).await;
                 } else {
                     self.load_state(&state)?;
-                    return Err(ViewError::from("no match found"));
+                    return Err(ViewError::NoMatchFound);
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
-                return Err(ViewError::from("cancelled"));
+                return Err(ViewError::Cancelled);
             }
             // the buffer doesn't implement find, do it ourself
             Err(e) if e.kind() == ErrorKind::Unsupported => {
@@ -271,7 +271,7 @@ impl FileView {
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
-                return Err(ViewError::from(e.to_string()));
+                return Err(ViewError::Other(e.to_string()));
             }
         }
 
@@ -289,13 +289,13 @@ impl FileView {
             self.view_offset += self.current_view().len().saturating_sub(MATCH_WINDOW);
 
             match self.load_next().await {
-                Ok(0) => break ViewError::from("no match found"),
-                Err(e) => break ViewError::from(e.to_string()),
+                Ok(0) => break ViewError::NoMatchFound,
+                Err(e) => break ViewError::Other(e.to_string()),
                 Ok(_) => (),
             }
 
             if cancelled.load(Ordering::Acquire) {
-                break ViewError::from("cancelled");
+                break ViewError::Cancelled;
             }
         };
 
@@ -336,7 +336,7 @@ impl FileView {
 
         self.buffer
             .jump(bytes)
-            .map_err(|e| ViewError::from(e.to_string()))?;
+            .map_err(|e| ViewError::Other(e.to_string()))?;
         self.view_offset = 0;
 
         if bytes == 0 {
@@ -357,7 +357,7 @@ impl FileView {
 
         self.buffer
             .jump(self.buffer.total_size().await - 1)
-            .map_err(|e| ViewError::from(e.to_string()))?;
+            .map_err(|e| ViewError::Other(e.to_string()))?;
         self.view_offset = self.buffer.data().len();
         self.current_line = Some(0);
         Ok(())
@@ -374,7 +374,7 @@ impl FileView {
         self.current_line = state.current_line;
         self.buffer
             .jump(state.buffer_pos)
-            .map_err(|e| ViewError::from(e.to_string()))?;
+            .map_err(|e| ViewError::Other(e.to_string()))?;
         Ok(())
     }
     fn current_view(&self) -> &str {

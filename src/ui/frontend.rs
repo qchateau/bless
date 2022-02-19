@@ -35,7 +35,8 @@ pub struct Frontend {
     stop: bool,
     follow: bool,
     right_offset: usize,
-    last_sent_resize: Option<Command>,
+    last_sent_resize: Command,
+    last_sent_command: RefCell<Command>,
     command_sender: RefCell<UnboundedSender<Command>>,
     cancel_sender: RefCell<UnboundedSender<()>>,
     state_receiver: Receiver<BackendState>,
@@ -53,7 +54,8 @@ impl Frontend {
             terminal: Some(terminal),
             command: String::new(),
             errors: RefCell::from(Vec::new()),
-            last_sent_resize: None,
+            last_sent_resize: Command::Resize(None, 0),
+            last_sent_command: RefCell::from(Command::Resize(None, 0)),
             right_offset: 0,
             search: None,
             wrap: true,
@@ -66,15 +68,15 @@ impl Frontend {
     }
     fn update_backend_size(&mut self, width: usize, height: usize) {
         let cmd = Command::Resize(if self.wrap { Some(width) } else { None }, height);
-        if Some(&cmd) != self.last_sent_resize.as_ref() {
-            self.last_sent_resize = Some(cmd);
-            self.send_command(self.last_sent_resize.as_ref().unwrap().clone());
+        if cmd != self.last_sent_resize {
+            self.last_sent_resize = cmd;
+            self.send_command(self.last_sent_resize.clone());
         }
     }
     pub async fn run(&mut self) -> Result<(), ViewError> {
         let mut events_reader = EventStream::new();
         let mut signals_reader = Signals::new(TERM_SIGNALS)
-            .map_err(|e| ViewError::from(format!("failed to install signal handler: {}", e)))?;
+            .map_err(|e| ViewError::Other(format!("failed to install signal handler: {}", e)))?;
 
         let term_size = self.terminal.as_ref().unwrap().size().unwrap();
         self.update_backend_size(term_size.width.into(), term_size.height.into());
@@ -87,19 +89,19 @@ impl Frontend {
                     Some(Ok(Event::Key(key))) => self.handle_key(key),
                     Some(Ok(Event::Resize(_, height))) => self.send_command(Command::Resize(None, height as usize)),
                     Some(Ok(_)) => {},
-                    Some(Err(e)) => return Err(ViewError::from(format!("event error: {}", e))),
-                    None => return Err(ViewError::from("end of event stream: {}")),
+                    Some(Err(e)) => return Err(ViewError::Other(format!("event error: {}", e))),
+                    None => return Err(ViewError::Other("end of event stream".to_string())),
                 },
                 maybe_state = self.state_receiver.changed().fuse() => match maybe_state {
                     Ok(_) => (),
-                    Err(e) => return Err(ViewError::from(format!("channel error: {}", e)))
+                    Err(e) => return Err(ViewError::Other(format!("channel error: {}", e)))
                 },
                 maybe_signal = signals_reader.next().fuse() => match maybe_signal {
                     Some(signal) => {
                         eprintln!("received signal {}", signal);
                         return Ok(());
                     },
-                    None => return Err(ViewError::from("signal handler interrupted"))
+                    None => return Err(ViewError::Other("signal handler interrupted".to_string()))
                 },
             }
         }
@@ -252,9 +254,7 @@ impl Frontend {
                 let pattern = x.get(1..x.len() - 1).unwrap_or("");
                 if pattern.is_empty() {
                     self.search = None;
-                } else if let Ok(re) =
-                    Regex::new(pattern).map_err(|_| ViewError::from("invalid regex"))
-                {
+                } else if let Ok(re) = Regex::new(pattern).map_err(|_| ViewError::InvalidRegex) {
                     self.search = Some(re);
                     self.send_command(Command::SearchDown(pattern.to_string()));
                 } else {
@@ -346,26 +346,25 @@ impl Frontend {
             flags.push(format!("/{}", re.to_string()));
         }
 
-        let header = Text::from(format!(
-            "Line {}, Offset {} ({:.1}%){}\n{}",
-            back.current_line
-                .map(|x| x.to_string())
-                .unwrap_or("?".to_owned()),
-            human_bytes(back.offset as f64),
-            100.0 * back.offset as f64 / back.file_size as f64,
-            if flags.is_empty() {
-                "".to_owned()
-            } else {
-                format!(", {}", flags.join(", "))
-            },
-            if !back.errors.is_empty() {
-                format!("Backend error: {}", back.errors.join(", "))
-            } else if !self.errors.borrow().is_empty() {
-                format!("Frontend error: {}", self.errors.borrow().join(", "))
-            } else {
-                format!("Command: {}", self.command)
-            },
-        ));
+        let header = Text::from(
+            [
+                format!(
+                    "Line {}, Offset {} ({:.1}%){}",
+                    back.current_line
+                        .map(|x| x.to_string())
+                        .unwrap_or("?".to_owned()),
+                    human_bytes(back.offset as f64),
+                    100.0 * back.offset as f64 / back.file_size as f64,
+                    if flags.is_empty() {
+                        "".to_owned()
+                    } else {
+                        format!(", {}", flags.join(", "))
+                    },
+                ),
+                self.build_status(&back),
+            ]
+            .join("\n"),
+        );
 
         let paragraph = Paragraph::new(header)
             .style(Style::default())
@@ -388,10 +387,37 @@ impl Frontend {
         f.render_widget(paragraph, chunks[1]);
     }
 
+    fn build_status(&self, back: &BackendState) -> String {
+        // Go over all backend errors and remove what's irrelevant
+        // to the user
+        let back_errors = back
+            .errors
+            .iter()
+            .filter(|x| match x {
+                ViewError::EOF | ViewError::BOF => {
+                    matches![*self.last_sent_command.borrow(), Command::MoveLine(_)]
+                }
+                _ => true,
+            })
+            .map(|x| format!("{}", x))
+            .collect::<Vec<String>>();
+
+        if !self.command.is_empty() {
+            format!("Command: {}", self.command)
+        } else if !back_errors.is_empty() {
+            format!("Backend error: {}", back_errors.join(", "))
+        } else if !self.errors.borrow().is_empty() {
+            format!("Frontend error: {}", self.errors.borrow().join(", "))
+        } else {
+            "".to_string()
+        }
+    }
+
     fn send_command(&self, command: Command) {
-        if let Err(e) = self.command_sender.borrow_mut().send(command) {
+        if let Err(e) = self.command_sender.borrow_mut().send(command.clone()) {
             self.push_error(format!("command channel error: {}", e));
         }
+        *self.last_sent_command.borrow_mut() = command;
     }
 
     fn send_cancel(&self) {
