@@ -239,6 +239,8 @@ impl CommandHandler {
         let mut state = BackendState::new();
 
         state.file_path = self.file_view.file_path().to_owned();
+
+        let offset_before = self.file_view.offset();
         state.text = match self.file_view.view(self.view_height, self.view_width).await {
             Ok(x) => x.iter().map(|x| x.to_string()).collect(),
             Err(e) => {
@@ -253,6 +255,12 @@ impl CommandHandler {
         state.follow = self.follow;
         state.errors = self.command_errors.clone();
         state.marks = self.marks.keys().map(|x| x.clone()).collect();
+
+        if offset_before > state.offset {
+            // building the view shifted the view upwards,
+            // we hit the EOF
+            state.errors.push("already at the bottom".to_string());
+        }
 
         return state;
     }
