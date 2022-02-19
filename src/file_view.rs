@@ -7,6 +7,7 @@ use human_bytes::human_bytes;
 use num_integer::div_ceil;
 use regex::{bytes, Regex};
 use std::{
+    fs::canonicalize,
     io,
     io::ErrorKind,
     ops::Range,
@@ -26,17 +27,18 @@ pub struct ViewState {
 
 #[derive(Debug)]
 pub struct FileView {
-    file_path: String,
+    real_file_path: String,
     buffer: Box<dyn FileBuffer>,
     view_offset: usize,
     current_line: Option<i64>,
 }
 
 impl FileView {
-    pub async fn new(path: String) -> io::Result<Self> {
-        let buffer = make_file_buffer(&path).await?;
+    pub async fn new(path: &str) -> io::Result<Self> {
+        let real_file_path = canonicalize(path)?.to_string_lossy().to_string();
+        let buffer = make_file_buffer(&real_file_path).await?;
         return Ok(Self {
-            file_path: path,
+            real_file_path,
             buffer: Box::from(buffer),
             view_offset: 0,
             current_line: Some(1),
@@ -45,8 +47,8 @@ impl FileView {
     pub async fn file_size(&self) -> u64 {
         return self.buffer.total_size().await;
     }
-    pub fn file_path(&self) -> &str {
-        return self.file_path.as_str();
+    pub fn real_file_path(&self) -> &str {
+        return self.real_file_path.as_str();
     }
     pub fn current_line(&self) -> Option<i64> {
         return self.current_line;

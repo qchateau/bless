@@ -1,6 +1,8 @@
 use regex::Regex;
 use std::{
     collections::HashMap,
+    fs::canonicalize,
+    io,
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -32,6 +34,7 @@ pub enum Command {
 #[derive(Clone)]
 pub struct BackendState {
     pub file_path: String,
+    pub real_file_path: String,
     pub file_size: u64,
     pub errors: Vec<ViewError>,
     pub current_line: Option<i64>,
@@ -45,6 +48,7 @@ impl BackendState {
     pub fn new() -> Self {
         return Self {
             file_path: String::new(),
+            real_file_path: String::new(),
             text: Vec::new(),
             errors: Vec::new(),
             follow: false,
@@ -59,6 +63,7 @@ impl BackendState {
 struct CommandHandler {
     command_receiver: UnboundedReceiver<Command>,
     state_sender: Sender<BackendState>,
+    file_path: String,
     file_view: FileView,
     view_width: Option<usize>,
     view_height: usize,
@@ -79,17 +84,19 @@ pub struct Backend {
 }
 
 impl Backend {
-    pub fn new(
+    pub async fn new(
         command_receiver: UnboundedReceiver<Command>,
         cancel_receiver: UnboundedReceiver<()>,
         state_sender: Sender<BackendState>,
-        file_view: FileView,
-    ) -> Self {
+        path: &str,
+    ) -> io::Result<Self> {
         let cancelled = Rc::from(AtomicBool::from(false));
-        return Self {
+        let file_view = FileView::new(path).await?;
+        return Ok(Self {
             command_handler: CommandHandler {
                 command_receiver,
                 state_sender,
+                file_path: path.to_string(),
                 file_view,
                 view_width: None,
                 view_height: 0,
@@ -102,7 +109,7 @@ impl Backend {
                 cancel_receiver,
                 cancelled: cancelled.clone(),
             },
-        };
+        });
     }
 
     pub async fn run(&mut self) -> Result<(), ViewError> {
@@ -158,6 +165,10 @@ impl CommandHandler {
                     prev_file_size = file_size;
                 },
             }
+
+            self.maybe_reload_file()
+                .await
+                .map_err(|e| ViewError::Other(e.to_string()))?;
 
             if self.follow {
                 while self.file_view.down(1_000_000).await.is_ok() {}
@@ -238,7 +249,8 @@ impl CommandHandler {
     async fn generate_state(&mut self) -> BackendState {
         let mut state = BackendState::new();
 
-        state.file_path = self.file_view.file_path().to_owned();
+        state.file_path = self.file_path.clone();
+        state.real_file_path = self.file_view.real_file_path().to_owned();
 
         let offset_before = self.file_view.offset();
         state.text = match self.file_view.view(self.view_height, self.view_width).await {
@@ -271,5 +283,14 @@ impl CommandHandler {
             .send(state)
             .map_err(|_| ViewError::Other("state channel error".to_string()))?;
         Ok(())
+    }
+
+    async fn maybe_reload_file(&mut self) -> io::Result<()> {
+        let real_file_path = canonicalize(&self.file_path)?.to_string_lossy().to_string();
+        if real_file_path != self.file_view.real_file_path() {
+            eprintln!("reloading file");
+            self.file_view = FileView::new(&self.file_path).await?;
+        }
+        return Ok(());
     }
 }

@@ -5,7 +5,7 @@ mod term;
 mod ui;
 mod utils;
 
-use crate::{file_view::FileView, term::ConfigureTerm, ui::Ui};
+use crate::{term::ConfigureTerm, ui::Ui};
 use clap::Parser;
 use std::{
     io, panic,
@@ -30,7 +30,7 @@ async fn main() -> io::Result<()> {
         default_panic(panic_info);
     }));
 
-    let mut ui = Ui::new(FileView::new(args.path).await?)?;
+    let mut ui = Ui::new(&args.path).await?;
     let res = ui.run().await;
     term.lock().unwrap().as_mut().unwrap().cleanup();
     return res;

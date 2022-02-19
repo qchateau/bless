@@ -346,6 +346,11 @@ impl Frontend {
             flags.push(format!("/{}", re.to_string()));
         }
 
+        let header_title = format!(
+            "{} - {}",
+            back.real_file_path,
+            human_bytes(back.file_size as f64)
+        );
         let header = Text::from(
             [
                 format!(
@@ -368,15 +373,7 @@ impl Frontend {
 
         let paragraph = Paragraph::new(header)
             .style(Style::default())
-            .block(
-                Block::default()
-                    .title(format!(
-                        "{} - {}",
-                        back.file_path,
-                        human_bytes(back.file_size as f64)
-                    ))
-                    .borders(Borders::ALL),
-            )
+            .block(Block::default().title(header_title).borders(Borders::ALL))
             .alignment(Alignment::Left);
         f.render_widget(paragraph, chunks[0]);
 

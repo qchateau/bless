@@ -7,12 +7,9 @@ use tokio::{
     sync::{mpsc, watch},
 };
 
-use crate::{
-    file_view::FileView,
-    ui::{
-        backend::{Backend, BackendState},
-        frontend::Frontend,
-    },
+use crate::ui::{
+    backend::{Backend, BackendState},
+    frontend::Frontend,
 };
 
 pub struct Ui {
@@ -21,11 +18,11 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(file_view: FileView) -> io::Result<Self> {
+    pub async fn new(path: &str) -> io::Result<Self> {
         let (state_sender, state_receiver) = watch::channel(BackendState::new());
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
         let (cancel_sender, cancel_receiver) = mpsc::unbounded_channel();
-        let backend = Backend::new(command_receiver, cancel_receiver, state_sender, file_view);
+        let backend = Backend::new(command_receiver, cancel_receiver, state_sender, path).await?;
         let frontend = Frontend::new(command_sender, cancel_sender, state_receiver)?;
         return Ok(Self { backend, frontend });
     }
