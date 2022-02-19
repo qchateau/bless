@@ -1,4 +1,8 @@
-use std::fmt::Display;
+use std::{
+    borrow::Cow,
+    fmt::Display,
+    str::{from_utf8, from_utf8_unchecked},
+};
 
 pub struct InfiniteLoopBreaker<T> {
     count: u64,
@@ -44,4 +48,17 @@ pub fn nth_or_last<I: Iterator>(mut iter: I, nth: usize) -> Option<(I::Item, usi
         Some(item) => Some((item, cnt - 1)),
         None => None,
     };
+}
+
+pub fn decode_utf8(data: &[u8]) -> Cow<str> {
+    match from_utf8(data) {
+        Ok(string) => Cow::Borrowed(string),
+        Err(e) => {
+            if e.valid_up_to() > data.len() - 4 {
+                Cow::Borrowed(unsafe { from_utf8_unchecked(&data[..e.valid_up_to()]) })
+            } else {
+                String::from_utf8_lossy(data)
+            }
+        }
+    }
 }

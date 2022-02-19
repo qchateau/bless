@@ -254,7 +254,7 @@ impl CommandHandler {
 
         let offset_before = self.file_view.offset();
         state.text = match self.file_view.view(self.view_height, self.view_width).await {
-            Ok(x) => x.iter().map(|x| x.to_string()).collect(),
+            Ok(x) => x,
             Err(e) => {
                 state.errors.push(e);
                 Vec::new()

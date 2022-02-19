@@ -1,17 +1,17 @@
 use crate::{
     errors::ViewError,
     file_buffer::{make_file_buffer, FileBuffer},
-    utils::{nth_or_last, InfiniteLoopBreaker},
+    utils::{decode_utf8, nth_or_last, InfiniteLoopBreaker},
 };
 use human_bytes::human_bytes;
 use num_integer::div_ceil;
 use regex::{bytes, Regex};
 use std::{
+    borrow::Cow,
     fs::canonicalize,
     io,
     io::ErrorKind,
     ops::Range,
-    str::{from_utf8, from_utf8_unchecked},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -63,7 +63,7 @@ impl FileView {
         &mut self,
         nlines: usize,
         ncols: Option<usize>,
-    ) -> Result<Vec<&str>, ViewError> {
+    ) -> Result<Vec<String>, ViewError> {
         eprintln!("building view for {}x{}", nlines, ncols.unwrap_or(0));
 
         loop {
@@ -78,12 +78,22 @@ impl FileView {
                 }
 
                 if out_lines > nlines {
-                    return Ok(self.current_view().lines().take(in_lines).collect());
+                    return Ok(self
+                        .current_view()
+                        .lines()
+                        .take(in_lines)
+                        .map(|x| x.to_string())
+                        .collect());
                 }
 
                 in_lines += 1;
                 if out_lines == nlines {
-                    return Ok(self.current_view().lines().take(in_lines).collect());
+                    return Ok(self
+                        .current_view()
+                        .lines()
+                        .take(in_lines)
+                        .map(|x| x.to_string())
+                        .collect());
                 }
             }
 
@@ -96,7 +106,7 @@ impl FileView {
 
         loop {
             if self.up(1).await.is_err() {
-                return Ok(self.current_view().lines().collect());
+                return Ok(self.current_view().lines().map(|x| x.to_string()).collect());
             }
             let out_lines = self.current_view().lines().fold(0, |acc, line| {
                 if ncols.is_some() {
@@ -109,7 +119,7 @@ impl FileView {
                 if out_lines > nlines {
                     self.down(1).await.ok();
                 }
-                return Ok(self.current_view().lines().collect());
+                return Ok(self.current_view().lines().map(|x| x.to_string()).collect());
             }
         }
     }
@@ -186,7 +196,8 @@ impl FileView {
         }
 
         let err = loop {
-            let m = regex.find_iter(self.above_view()).last();
+            let above_view = self.above_view();
+            let m = regex.find_iter(&above_view).last();
             if let Some(m) = m {
                 // align view_offset to a line start, use self.up
                 // add 1 to the view offset in case the match is start of line already
@@ -278,7 +289,8 @@ impl FileView {
         }
 
         let err = loop {
-            let m = regex.find(self.current_view());
+            let view = self.current_view();
+            let m = regex.find(&view);
             if let Some(m) = m {
                 // align view_offset to a line start, use self.up
                 // add 1 to the view offset in case the match is start of line already
@@ -379,19 +391,13 @@ impl FileView {
             .map_err(|e| ViewError::Other(e.to_string()))?;
         Ok(())
     }
-    fn current_view(&self) -> &str {
+    fn current_view(&self) -> Cow<str> {
         let slice = self.buffer.data().get(self.view_offset..).unwrap_or(b"");
-        match from_utf8(slice) {
-            Ok(string) => string,
-            Err(e) => unsafe { from_utf8_unchecked(&slice[..e.valid_up_to()]) },
-        }
+        return decode_utf8(slice);
     }
-    fn above_view(&self) -> &str {
+    fn above_view(&self) -> Cow<str> {
         let slice = self.buffer.data().get(..self.view_offset).unwrap_or(b"");
-        match from_utf8(slice) {
-            Ok(string) => string,
-            Err(e) => unsafe { from_utf8_unchecked(&slice[..e.valid_up_to()]) },
-        }
+        return decode_utf8(slice);
     }
     fn maybe_shrink(&mut self, range: Range<u64>) {
         let size_before = self.buffer.data().len();
