@@ -7,6 +7,7 @@ mod utils;
 
 use crate::{errors::Result, term::ConfigureTerm, ui::Ui};
 use clap::Parser;
+use env_logger;
 use std::{
     panic,
     sync::{Arc, Mutex},
@@ -20,6 +21,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
+
     let args = Args::parse();
     let term = Arc::new(Mutex::new(Some(ConfigureTerm::new()?)));
     let term_copy = term.clone();

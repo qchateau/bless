@@ -2,6 +2,7 @@ use super::FileBuffer;
 use async_trait::async_trait;
 use bzip2::Decompress;
 use human_bytes::human_bytes;
+use log::{debug, info};
 use memmap::{Mmap, MmapOptions};
 use regex::bytes::Regex;
 use std::{
@@ -79,7 +80,7 @@ impl Bz2FileBuffer {
         let mut in_data = &mmap[block.file_range.clone()];
         decoder.decompress(self.header.as_slice(), &mut block.data)?;
 
-        eprintln!("decoding {}", human_bytes(in_data.len() as f64));
+        info!("decoding {}", human_bytes(in_data.len() as f64));
         loop {
             let before_in = decoder.total_in();
             let before_out = decoder.total_out();
@@ -97,10 +98,10 @@ impl Bz2FileBuffer {
         }
     }
     fn find_block_from(&self, byte: usize) -> Result<usize> {
-        eprintln!("searching next block from {}", byte);
+        debug!("searching next block from {}", byte);
         let mmap = self.mmap()?;
         if let Some(m) = self.magic_re.find(&mmap[byte..]) {
-            eprintln!("found at {}", byte + m.range().start);
+            debug!("found at {}", byte + m.range().start);
             return Ok(byte + m.range().start);
         } else {
             // Kind of a hack, but makes things easier
@@ -108,13 +109,13 @@ impl Bz2FileBuffer {
         }
     }
     fn rfind_block_from(&self, byte: usize) -> Result<usize> {
-        eprintln!("searching previous block from {}", byte);
+        debug!("searching previous block from {}", byte);
         let mmap = self.mmap()?;
         let mut end = byte;
         let mut start = end.saturating_sub(MAGIC_RFIND_WINDOW);
         loop {
             if let Some(m) = self.magic_re.find_iter(&mmap[start..end]).last() {
-                eprintln!("found at {}", start + m.range().start);
+                debug!("found at {}", start + m.range().start);
                 return Ok(start + m.range().start);
             }
             if start == 0 {
@@ -153,7 +154,7 @@ impl FileBuffer for Bz2FileBuffer {
             start: self.rfind_block_from(byte as usize)?,
             end: self.find_block_from(byte as usize)?,
         })?;
-        eprintln!("jump to {:?} (requested {})", block.file_range, byte);
+        info!("jump to {:?} (requested {})", block.file_range, byte);
         self.blocks.clear();
         self.blocks.push_back(block);
         self.rebuild_data();
@@ -163,7 +164,7 @@ impl FileBuffer for Bz2FileBuffer {
         return self.file.metadata().unwrap().len();
     }
     async fn load_next(&mut self) -> Result<usize> {
-        eprintln!("load next");
+        debug!("load next");
         yield_now().await;
 
         let end = self.range().end as usize;
@@ -181,7 +182,7 @@ impl FileBuffer for Bz2FileBuffer {
         return Ok(self.data().len() - size_before);
     }
     async fn load_prev(&mut self) -> Result<usize> {
-        eprintln!("load previous");
+        debug!("load previous");
         yield_now().await;
 
         let start = self.range().start as usize;
@@ -236,7 +237,7 @@ impl FileBuffer for Bz2FileBuffer {
             start: len_front as u64,
             end: (len_front + len_range) as u64,
         };
-        eprintln!("shrinked to {:?} (requested {:?})", shrinked_range, range);
+        info!("shrinked to {:?} (requested {:?})", shrinked_range, range);
         return shrinked_range;
     }
 }

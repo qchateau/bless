@@ -1,3 +1,4 @@
+use log::info;
 use regex::Regex;
 use std::{
     collections::HashMap,
@@ -177,7 +178,7 @@ impl CommandHandler {
     }
 
     async fn handle_command(&mut self, command: Command) -> Result<()> {
-        eprintln!("command: {:?}", command);
+        info!("command: {:?}", command);
         let res = match command {
             Command::Follow(follow) => {
                 self.follow = follow;
@@ -258,7 +259,6 @@ impl CommandHandler {
                 Vec::new()
             }
         };
-        eprintln!("{}", state.text.join("\n"));
 
         state.file_size = self.file_view.file_size().await;
         state.current_line = self.file_view.current_line();
@@ -287,7 +287,7 @@ impl CommandHandler {
     async fn maybe_reload_file(&mut self) -> Result<()> {
         let real_file_path = canonicalize(&self.file_path)?.to_string_lossy().to_string();
         if real_file_path != self.file_view.real_file_path() {
-            eprintln!("reloading file");
+            info!("reloading file");
             self.file_view = FileView::new(&self.file_path).await?;
         }
         return Ok(());

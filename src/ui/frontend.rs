@@ -1,6 +1,7 @@
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::{future::FutureExt, select, StreamExt};
 use human_bytes::human_bytes;
+use log::info;
 use regex::Regex;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_async_std::Signals;
@@ -105,7 +106,7 @@ impl Frontend {
                 },
                 maybe_signal = signals_reader.next().fuse() => match maybe_signal {
                     Some(signal) => {
-                        eprintln!("received signal {}", signal);
+                        info!("received signal {}", signal);
                         return Ok(());
                     },
                     None => return Err(FrontendError::EndOfSignalStream.into())

@@ -1,3 +1,4 @@
+use log::info;
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
@@ -32,7 +33,7 @@ impl InfiniteLoopBreaker {
     pub fn it(&mut self) -> Result<(), InfiniteLoopError> {
         self.current_count -= 1;
         if self.current_count == 0 {
-            eprintln!("loop break");
+            info!("loop break");
             return Err(InfiniteLoopError);
         }
         return Ok(());

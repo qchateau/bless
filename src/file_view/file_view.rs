@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use human_bytes::human_bytes;
+use log::{debug, info};
 use num_integer::div_ceil;
 use regex::{bytes, Regex};
 use std::{
@@ -62,7 +63,7 @@ impl FileView {
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
     pub async fn view(&mut self, nlines: usize, ncols: Option<usize>) -> Result<Vec<String>> {
-        eprintln!("building view for {}x{}", nlines, ncols.unwrap_or(0));
+        info!("building view for {}x{}", nlines, ncols.unwrap_or(0));
 
         loop {
             let mut in_lines = 0;
@@ -124,7 +125,7 @@ impl FileView {
     pub async fn up(&mut self, mut lines: u64) -> Result<()> {
         let mut breaker = InfiniteLoopBreaker::new(10);
 
-        eprintln!("up {}", lines);
+        debug!("up {}", lines);
         while lines > 0 {
             breaker.it()?;
 
@@ -162,7 +163,7 @@ impl FileView {
         regex: &Regex,
         cancelled: &AtomicBool,
     ) -> Result<()> {
-        eprintln!("up to line matching {}", regex.as_str());
+        info!("up to line matching {}", regex.as_str());
 
         let state = self.save_state();
 
@@ -171,21 +172,25 @@ impl FileView {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
+                    debug!("match found");
                     return self.jump_to_byte(m.start).await;
                 } else {
                     self.load_state(&state)?;
+                    debug!("no match found");
                     return Err(ViewError::NoMatchFound.into());
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
+                debug!("search cancelled");
                 return Err(ViewError::Cancelled.into());
             }
             // the buffer doesn't implement find, do it ourself
             Err(e) if e.kind() == ErrorKind::Unsupported => {
-                eprintln!("no fast implementation, using default impl");
+                info!("no fast implementation, using default impl");
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
+                debug!("search error: {}", e);
                 return Err(e.into());
             }
         }
@@ -199,6 +204,7 @@ impl FileView {
                 self.view_offset = m.start() + 1;
                 self.up(1).await.ok();
                 self.current_line = None;
+                debug!("match found");
                 return Ok(());
             }
 
@@ -216,12 +222,13 @@ impl FileView {
         };
 
         self.load_state(&state)?;
+        debug!("no match found: {}", err);
         return Err(err);
     }
     pub async fn down(&mut self, mut lines: u64) -> Result<()> {
         let mut breaker = InfiniteLoopBreaker::new(10);
 
-        eprintln!("down {}", lines);
+        debug!("down {}", lines);
         while lines > 0 {
             breaker.it()?;
             match nth_or_last(
@@ -249,7 +256,7 @@ impl FileView {
         skip_current: bool,
         cancelled: &AtomicBool,
     ) -> Result<()> {
-        eprintln!("down to line matching {}", regex.as_str());
+        info!("down to line matching {}", regex.as_str());
 
         let state = self.save_state();
         if skip_current {
@@ -261,21 +268,25 @@ impl FileView {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
+                    debug!("match found");
                     return self.jump_to_byte(m.start).await;
                 } else {
                     self.load_state(&state)?;
+                    debug!("no match found");
                     return Err(ViewError::NoMatchFound.into());
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
+                debug!("search cancelled");
                 return Err(ViewError::Cancelled.into());
             }
             // the buffer doesn't implement find, do it ourself
             Err(e) if e.kind() == ErrorKind::Unsupported => {
-                eprintln!("no fast implementation, using default impl");
+                info!("no fast implementation, using default impl");
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
+                debug!("search error: {}", e);
                 return Err(e.into());
             }
         }
@@ -289,6 +300,7 @@ impl FileView {
                 self.view_offset += m.start() + 1;
                 self.up(1).await.ok();
                 self.current_line = None;
+                debug!("match found");
                 return Ok(());
             }
 
@@ -305,11 +317,12 @@ impl FileView {
             }
         };
 
+        debug!("no match found: {}", err);
         self.load_state(&state)?;
         return Err(err);
     }
     pub async fn jump_to_line(&mut self, line: i64) -> Result<()> {
-        eprintln!("jump to line {}", line);
+        info!("jump to line {}", line);
 
         //  move to the right "side" of the file
         if line > 0 && (self.current_line.is_none() || self.current_line.unwrap() <= 0) {
@@ -338,7 +351,7 @@ impl FileView {
         };
     }
     pub async fn jump_to_byte(&mut self, bytes: u64) -> Result<()> {
-        eprintln!("jump to byte {}", bytes);
+        info!("jump to byte {}", bytes);
 
         self.buffer.jump(bytes).map_err(|e| Box::new(e))?;
         self.view_offset = 0;
@@ -352,12 +365,12 @@ impl FileView {
         }
     }
     pub async fn top(&mut self) -> Result<()> {
-        eprintln!("jump to top");
+        info!("jump to top");
 
         self.jump_to_byte(0).await
     }
     pub async fn bottom(&mut self) -> Result<()> {
-        eprintln!("jump to bottom");
+        info!("jump to bottom");
 
         self.buffer
             .jump(self.buffer.total_size().await - 1)
@@ -396,7 +409,7 @@ impl FileView {
         }
         let shrinked = self.buffer.shrink_to(range.clone());
         self.view_offset = (range.start - shrinked.start) as usize;
-        eprintln!(
+        debug!(
             "shriked: {}, size: {}, new offset: {}",
             human_bytes((size_before - self.buffer.data().len()) as f64),
             human_bytes(self.buffer.data().len() as f64),
@@ -416,14 +429,14 @@ impl FileView {
     async fn load_next(&mut self) -> Result<usize> {
         let load_size = self.buffer.load_next().await?;
         self.maybe_shrink_left();
-        eprintln!("loaded {} next bytes", load_size);
+        debug!("loaded {} next bytes", load_size);
         return Ok(load_size);
     }
     async fn load_prev(&mut self) -> Result<usize> {
         let load_size = self.buffer.load_prev().await?;
         self.view_offset += load_size;
         self.maybe_shrink_right();
-        eprintln!("loaded {} previous bytes", load_size);
+        debug!("loaded {} previous bytes", load_size);
         return Ok(load_size);
     }
 }
