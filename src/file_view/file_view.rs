@@ -3,7 +3,7 @@ use crate::{
     file_buffer::{make_file_buffer, FileBuffer},
     file_view::ViewError,
     utils::{
-        algorithm::nth_or_last, infinite_loop_breaker::InfiniteLoopBreaker, utf8::decode_utf8,
+        algorithm::nth_or_last, infinite_loop_breaker::InfiniteLoopBreaker, text::decode_utf8,
     },
 };
 use human_bytes::human_bytes;

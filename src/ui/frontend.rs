@@ -5,6 +5,7 @@ use regex::Regex;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_async_std::Signals;
 use std::{
+    borrow::Cow,
     cell::RefCell,
     cmp::min,
     io::{self, Stdout},
@@ -26,6 +27,7 @@ use crate::{
         backend::{BackendState, Command},
         errors::{ChannelError, FrontendError},
     },
+    utils::text::convert_tabs,
 };
 
 const FAST_SCROLL_LINES: i64 = 5;
@@ -39,6 +41,7 @@ pub struct Frontend {
     stop: bool,
     follow: bool,
     right_offset: usize,
+    tab_width: usize,
     last_sent_resize: Command,
     last_sent_command: RefCell<Command>,
     command_sender: RefCell<UnboundedSender<Command>>,
@@ -61,6 +64,7 @@ impl Frontend {
             last_sent_resize: Command::Resize(None, 0),
             last_sent_command: RefCell::from(Command::Resize(None, 0)),
             right_offset: 0,
+            tab_width: 4,
             search: None,
             wrap: true,
             stop: false,
@@ -264,6 +268,13 @@ impl Frontend {
                     self.push_error("invalid regex".to_owned());
                 }
             }
+            x if x.ends_with("tw") => {
+                if let Ok(width) = x.get(..x.len() - 2).unwrap().parse::<usize>() {
+                    self.tab_width = width
+                } else {
+                    self.push_error("not a number".to_owned());
+                }
+            }
             _ => command_done = self.command.ends_with("\n"),
         };
 
@@ -284,10 +295,15 @@ impl Frontend {
         let mut view_lines_per_line = Vec::new();
 
         let back = self.state_receiver.borrow();
+        let backend_text = convert_tabs(
+            back.text.iter().map(|x| Cow::from(x)).collect(),
+            self.tab_width,
+        );
+
         let text = {
             let mut lines = Vec::new();
 
-            for mut line in back.text.iter().map(|x| x.as_str()) {
+            for mut line in backend_text.iter().map(|x| x.as_ref()) {
                 let lines_before = lines.len();
                 let mut offset = if self.wrap { 0 } else { self.right_offset };
                 let mut spans = Vec::new();
