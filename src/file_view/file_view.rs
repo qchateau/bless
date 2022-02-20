@@ -3,13 +3,15 @@ use crate::{
     file_buffer::{make_file_buffer, FileBuffer},
     file_view::ViewError,
     utils::{
-        algorithm::nth_or_last, infinite_loop_breaker::InfiniteLoopBreaker, text::decode_utf8,
+        algorithm::{find_nth_or_last, rfind_nth_or_last},
+        infinite_loop_breaker::InfiniteLoopBreaker,
+        text::decode_utf8,
     },
 };
 use human_bytes::human_bytes;
 use log::{debug, info};
 use num_integer::div_ceil;
-use regex::{bytes, Regex};
+use regex::bytes;
 use std::{
     borrow::Cow,
     fs::canonicalize,
@@ -68,8 +70,9 @@ impl FileView {
         loop {
             let mut in_lines = 0;
             let mut out_lines = 0;
+            let view = self.current_view_utf8();
 
-            for line in self.current_view().lines() {
+            for line in view.lines() {
                 if ncols.is_some() {
                     out_lines += div_ceil(line.chars().count(), ncols.unwrap());
                 } else {
@@ -77,22 +80,12 @@ impl FileView {
                 }
 
                 if out_lines > nlines {
-                    return Ok(self
-                        .current_view()
-                        .lines()
-                        .take(in_lines)
-                        .map(|x| x.to_string())
-                        .collect());
+                    return Ok(view.lines().take(in_lines).map(|x| x.to_string()).collect());
                 }
 
                 in_lines += 1;
                 if out_lines == nlines {
-                    return Ok(self
-                        .current_view()
-                        .lines()
-                        .take(in_lines)
-                        .map(|x| x.to_string())
-                        .collect());
+                    return Ok(view.lines().take(in_lines).map(|x| x.to_string()).collect());
                 }
             }
 
@@ -105,9 +98,14 @@ impl FileView {
 
         loop {
             if self.up(1).await.is_err() {
-                return Ok(self.current_view().lines().map(|x| x.to_string()).collect());
+                return Ok(self
+                    .current_view_utf8()
+                    .lines()
+                    .map(|x| x.to_string())
+                    .collect());
             }
-            let out_lines = self.current_view().lines().fold(0, |acc, line| {
+
+            let out_lines = self.current_view_utf8().lines().fold(0, |acc, line| {
                 if ncols.is_some() {
                     acc + div_ceil(line.chars().count(), ncols.unwrap())
                 } else {
@@ -118,7 +116,12 @@ impl FileView {
                 if out_lines > nlines {
                     self.down(1).await.ok();
                 }
-                return Ok(self.current_view().lines().map(|x| x.to_string()).collect());
+
+                return Ok(self
+                    .current_view_utf8()
+                    .lines()
+                    .map(|x| x.to_string())
+                    .collect());
             }
         }
     }
@@ -131,11 +134,16 @@ impl FileView {
 
             let view = self.above_view();
             let view = &view[..view.len().saturating_sub(1)]; // skip backline
-            match nth_or_last(view.rmatch_indices('\n'), lines.saturating_sub(1) as usize) {
-                Some(((pos, _), nth)) => {
+
+            match rfind_nth_or_last(view, b'\n', lines.saturating_sub(1) as usize) {
+                Some((nth, pos)) => {
                     self.view_offset = pos + 1;
                     self.current_line = self.current_line.map(|x| x - 1 - nth as i64);
                     lines -= 1 + nth as u64;
+                    debug!(
+                        "found newline: {}, off: {}, line: {:?}",
+                        pos, self.view_offset, self.current_line
+                    );
                     breaker.reset();
                 }
                 None => match self.load_prev().await {
@@ -160,15 +168,14 @@ impl FileView {
     }
     pub async fn up_to_line_matching(
         &mut self,
-        regex: &Regex,
+        regex: &bytes::Regex,
         cancelled: &AtomicBool,
     ) -> Result<()> {
         info!("up to line matching {}", regex.as_str());
 
         let state = self.save_state();
 
-        let bytes_re = bytes::Regex::new(regex.as_str()).unwrap();
-        match self.buffer.rfind(&bytes_re, cancelled).await {
+        match self.buffer.rfind(&regex, cancelled).await {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
@@ -197,7 +204,7 @@ impl FileView {
 
         let err = loop {
             let above_view = self.above_view();
-            let m = regex.find_iter(&above_view).last();
+            let m = regex.find_iter(above_view).last();
             if let Some(m) = m {
                 // align view_offset to a line start, use self.up
                 // add 1 to the view offset in case the match is start of line already
@@ -231,11 +238,8 @@ impl FileView {
         debug!("down {}", lines);
         while lines > 0 {
             breaker.it()?;
-            match nth_or_last(
-                self.current_view().match_indices('\n'),
-                lines.saturating_sub(1) as usize,
-            ) {
-                Some(((pos, _), nth)) => {
+            match find_nth_or_last(self.current_view(), b'\n', lines.saturating_sub(1) as usize) {
+                Some((nth, pos)) => {
                     self.view_offset += pos + 1;
                     self.current_line = self.current_line.map(|x| x + 1 + nth as i64);
                     lines -= 1 + nth as u64;
@@ -252,7 +256,7 @@ impl FileView {
     }
     pub async fn down_to_line_matching(
         &mut self,
-        regex: &Regex,
+        regex: &bytes::Regex,
         skip_current: bool,
         cancelled: &AtomicBool,
     ) -> Result<()> {
@@ -263,8 +267,7 @@ impl FileView {
             self.down(1).await.ok();
         }
 
-        let bytes_re = bytes::Regex::new(regex.as_str()).unwrap();
-        match self.buffer.find(&bytes_re, cancelled).await {
+        match self.buffer.find(&regex, cancelled).await {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
@@ -293,7 +296,7 @@ impl FileView {
 
         let err = loop {
             let view = self.current_view();
-            let m = regex.find(&view);
+            let m = regex.find(view);
             if let Some(m) = m {
                 // align view_offset to a line start, use self.up
                 // add 1 to the view offset in case the match is start of line already
@@ -394,13 +397,14 @@ impl FileView {
             .map_err(|e| Box::new(e))?;
         Ok(())
     }
-    fn current_view(&self) -> Cow<str> {
-        let slice = self.buffer.data().get(self.view_offset..).unwrap_or(b"");
-        return decode_utf8(slice);
+    fn current_view(&self) -> &[u8] {
+        return self.buffer.data().get(self.view_offset..).unwrap_or(b"");
     }
-    fn above_view(&self) -> Cow<str> {
-        let slice = self.buffer.data().get(..self.view_offset).unwrap_or(b"");
-        return decode_utf8(slice);
+    fn current_view_utf8(&self) -> Cow<str> {
+        return decode_utf8(self.current_view());
+    }
+    fn above_view(&self) -> &[u8] {
+        return self.buffer.data().get(..self.view_offset).unwrap_or(b"");
     }
     fn maybe_shrink(&mut self, range: Range<u64>) {
         let size_before = self.buffer.data().len();

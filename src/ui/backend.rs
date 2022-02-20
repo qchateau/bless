@@ -1,5 +1,5 @@
 use log::info;
-use regex::Regex;
+use regex::bytes;
 use std::{
     collections::HashMap,
     error::Error,
@@ -187,7 +187,7 @@ impl CommandHandler {
             Command::SearchDown(pattern) => {
                 self.file_view
                     .down_to_line_matching(
-                        &Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
+                        &bytes::Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
                         false,
                         &self.cancelled,
                     )
@@ -196,7 +196,7 @@ impl CommandHandler {
             Command::SearchDownNext(pattern) => {
                 self.file_view
                     .down_to_line_matching(
-                        &Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
+                        &bytes::Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
                         true,
                         &self.cancelled,
                     )
@@ -205,7 +205,7 @@ impl CommandHandler {
             Command::SearchUp(pattern) => {
                 self.file_view
                     .up_to_line_matching(
-                        &Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
+                        &bytes::Regex::new(&pattern).map_err(|_| ViewError::InvalidRegex)?,
                         &self.cancelled,
                     )
                     .await
