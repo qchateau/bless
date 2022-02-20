@@ -32,6 +32,12 @@ use crate::{
 
 const FAST_SCROLL_LINES: i64 = 5;
 
+enum ColorMode {
+    Default,
+    Log,
+    Similarity,
+}
+
 pub struct Frontend {
     terminal: Option<Terminal<backend::CrosstermBackend<Stdout>>>,
     command: String,
@@ -42,6 +48,7 @@ pub struct Frontend {
     follow: bool,
     right_offset: usize,
     tab_width: usize,
+    color_mode: ColorMode,
     last_sent_resize: Command,
     last_sent_command: RefCell<Command>,
     command_sender: RefCell<UnboundedSender<Command>>,
@@ -65,6 +72,7 @@ impl Frontend {
             last_sent_command: RefCell::from(Command::Resize(None, 0)),
             right_offset: 0,
             tab_width: 4,
+            color_mode: ColorMode::Default,
             search: None,
             wrap: true,
             stop: false,
@@ -74,6 +82,7 @@ impl Frontend {
             state_receiver,
         });
     }
+
     fn update_backend_size(&mut self, width: usize, height: usize) {
         let cmd = Command::Resize(if self.wrap { Some(width) } else { None }, height);
         if cmd != self.last_sent_resize {
@@ -81,6 +90,7 @@ impl Frontend {
             self.send_command(self.last_sent_resize.clone());
         }
     }
+
     pub async fn run(&mut self) -> Result<()> {
         let mut events_reader = EventStream::new();
         let mut signals_reader = Signals::new(TERM_SIGNALS)?;
@@ -237,6 +247,9 @@ impl Frontend {
             "L" => self.right_offset += FAST_SCROLL_LINES as usize,
             "h" => self.right_offset = self.right_offset.saturating_sub(1),
             "H" => self.right_offset = self.right_offset.saturating_sub(FAST_SCROLL_LINES as usize),
+            "clog" => self.color_mode = ColorMode::Log,
+            "csim" => self.color_mode = ColorMode::Similarity,
+            "cdef" => self.color_mode = ColorMode::Default,
             x if x.starts_with("m") && x.len() > 1 => {
                 self.send_command(Command::SaveMark(String::from(&x[1..2])))
             }
@@ -397,15 +410,17 @@ impl Frontend {
 
     fn color_line<'a>(&self, line: &'a str) -> Spans<'a> {
         if let Some(re) = self.search.as_ref() {
-            self.color_linex_regex(line, re)
+            self.color_line_regex(line, re)
         } else {
-            let mut spans = Vec::new();
-            spans.push(Span::raw(line));
-            Spans::from(spans)
+            match self.color_mode {
+                ColorMode::Log => self.color_line_log(line),
+                ColorMode::Similarity => self.color_line_similariry(line),
+                _ => self.color_line_default(line),
+            }
         }
     }
 
-    fn color_linex_regex<'a>(&self, mut line: &'a str, re: &Regex) -> Spans<'a> {
+    fn color_line_regex<'a>(&self, mut line: &'a str, re: &Regex) -> Spans<'a> {
         let mut spans = Vec::new();
 
         while let Some(m) = re.find(line) {
@@ -420,6 +435,20 @@ impl Frontend {
 
         spans.push(Span::raw(line));
         return Spans::from(spans);
+    }
+
+    fn color_line_log<'a>(&self, line: &'a str) -> Spans<'a> {
+        self.color_line_default(line)
+    }
+
+    fn color_line_similariry<'a>(&self, line: &'a str) -> Spans<'a> {
+        self.color_line_default(line)
+    }
+
+    fn color_line_default<'a>(&self, line: &'a str) -> Spans<'a> {
+        let mut spans = Vec::new();
+        spans.push(Span::raw(line));
+        Spans::from(spans)
     }
 
     fn shift_lines<'a>(&self, lines: Vec<Spans<'a>>, offset: usize) -> Vec<Spans<'a>> {
