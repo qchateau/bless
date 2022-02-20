@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use bzip2::Decompress;
 use human_bytes::human_bytes;
 use log::{debug, info};
-use memmap::{Mmap, MmapOptions};
+use memmap2::{Advice, Mmap, MmapOptions};
 use regex::bytes::Regex;
 use std::{
     collections::VecDeque,
@@ -60,8 +60,10 @@ impl Bz2FileBuffer {
     pub fn is_valid(&self) -> bool {
         return Regex::new("BZ[h0][1-9]").unwrap().is_match(&self.header);
     }
-    fn mmap(&self) -> Result<Mmap> {
-        return unsafe { MmapOptions::new().map(&self.file) };
+    fn mmap(&self, advice: Advice) -> Result<Mmap> {
+        let mmap = unsafe { MmapOptions::new().map(&self.file) }?;
+        mmap.advise(advice)?;
+        return Ok(mmap);
     }
     fn rebuild_data(&mut self) {
         self.decoded.clear();
@@ -75,7 +77,7 @@ impl Bz2FileBuffer {
             data: Vec::new(),
         };
         let mut decoder = Decompress::new(false);
-        let mmap = self.mmap()?;
+        let mmap = self.mmap(Advice::Sequential)?;
 
         let mut in_data = &mmap[block.file_range.clone()];
         decoder.decompress(self.header.as_slice(), &mut block.data)?;
@@ -99,7 +101,7 @@ impl Bz2FileBuffer {
     }
     fn find_block_from(&self, byte: usize) -> Result<usize> {
         debug!("searching next block from {}", byte);
-        let mmap = self.mmap()?;
+        let mmap = self.mmap(Advice::Sequential)?;
         if let Some(m) = self.magic_re.find(&mmap[byte..]) {
             debug!("found at {}", byte + m.range().start);
             return Ok(byte + m.range().start);
@@ -110,7 +112,7 @@ impl Bz2FileBuffer {
     }
     fn rfind_block_from(&self, byte: usize) -> Result<usize> {
         debug!("searching previous block from {}", byte);
-        let mmap = self.mmap()?;
+        let mmap = self.mmap(Advice::Sequential)?;
         let mut end = byte;
         let mut start = end.saturating_sub(MAGIC_RFIND_WINDOW);
         loop {

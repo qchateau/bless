@@ -1,6 +1,6 @@
 use super::devec::DeVec;
 use async_trait::async_trait;
-use memmap::{Mmap, MmapOptions};
+use memmap2::{Advice, Mmap, MmapOptions};
 use regex::bytes::Regex;
 use std::{
     cmp::min,
@@ -31,8 +31,10 @@ impl FileBuffer {
             file,
         });
     }
-    fn mmap(&self) -> Result<Mmap> {
-        return unsafe { MmapOptions::new().map(&self.file) };
+    fn mmap(&self, advice: Advice) -> Result<Mmap> {
+        let mmap = unsafe { MmapOptions::new().map(&self.file) }?;
+        mmap.advise(advice)?;
+        return Ok(mmap);
     }
 }
 
@@ -99,7 +101,7 @@ impl super::FileBuffer for FileBuffer {
         return read_size_res;
     }
     async fn find(&mut self, re: &Regex, cancelled: &AtomicBool) -> io::Result<Option<Range<u64>>> {
-        let mmap = self.mmap()?;
+        let mmap = self.mmap(Advice::Sequential)?;
         let mut begin = self.buffer_offset as usize;
         let mut end = min(begin + FIND_WINDOW, mmap.len());
         loop {
@@ -126,7 +128,7 @@ impl super::FileBuffer for FileBuffer {
         re: &Regex,
         cancelled: &AtomicBool,
     ) -> io::Result<Option<Range<u64>>> {
-        let mmap = self.mmap()?;
+        let mmap = self.mmap(Advice::Sequential)?;
         let mut end = self.buffer_offset as usize;
         let mut begin = end.saturating_sub(FIND_WINDOW);
         loop {
