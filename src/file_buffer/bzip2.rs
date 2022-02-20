@@ -1,3 +1,5 @@
+use crate::utils::infinite_loop_breaker::InfiniteLoopBreaker;
+
 use super::FileBuffer;
 use async_trait::async_trait;
 use bzip2::Decompress;
@@ -18,6 +20,7 @@ use tokio::{fs::File, io::AsyncReadExt, task::yield_now};
 const ALLOC_SIZE: usize = 0x100000;
 const MAGIC_RFIND_WINDOW: usize = 0x10000;
 const MAGIC_RFIND_OVERLAP: usize = 8;
+const MAX_INVALID_BLOCKS: u64 = 10;
 
 struct Block {
     file_range: Range<usize>,
@@ -151,10 +154,26 @@ impl FileBuffer for Bz2FileBuffer {
         };
     }
     fn jump(&mut self, byte: u64) -> io::Result<u64> {
-        let block = self.decode_block(Range {
-            start: self.rfind_block_from(byte as usize)?,
-            end: self.find_block_from(byte as usize)?,
-        })?;
+        let mut breaker = InfiniteLoopBreaker::new(MAX_INVALID_BLOCKS);
+
+        let mut start = byte as usize;
+        let mut end = byte as usize;
+
+        let block = loop {
+            end = self.find_block_from(end + 1)?;
+            start = self.rfind_block_from(start)?;
+
+            let block_range = Range { start, end };
+            match self.decode_block(block_range) {
+                Ok(block) => break block,
+                Err(err) => {
+                    if let Err(_) = breaker.it() {
+                        return Err(err);
+                    }
+                }
+            }
+        };
+
         info!("jump to {:?} (requested {})", block.file_range, byte);
         self.blocks.clear();
         self.blocks.push_back(block);
@@ -168,16 +187,29 @@ impl FileBuffer for Bz2FileBuffer {
         debug!("load next");
         yield_now().await;
 
-        let end = self.range().end as usize;
+        let mut breaker = InfiniteLoopBreaker::new(MAX_INVALID_BLOCKS);
         let size_before = self.data().len();
-        let next_block = self.find_block_from(end as usize + 1)?;
-        if next_block <= end {
-            return Ok(0);
-        }
-        let block = self.decode_block(Range {
-            start: end,
-            end: next_block,
-        })?;
+
+        let start = self.range().end as usize;
+        let mut end = start;
+
+        let block = loop {
+            end = self.find_block_from(end + 1)?;
+            if end <= start {
+                return Ok(0);
+            }
+
+            let block_range = Range { start, end };
+            match self.decode_block(block_range) {
+                Ok(block) => break block,
+                Err(err) => {
+                    if let Err(_) = breaker.it() {
+                        return Err(err);
+                    }
+                }
+            }
+        };
+
         self.decoded.extend(block.data.iter());
         self.blocks.push_back(block);
         return Ok(self.data().len() - size_before);
@@ -186,16 +218,29 @@ impl FileBuffer for Bz2FileBuffer {
         debug!("load previous");
         yield_now().await;
 
-        let start = self.range().start as usize;
+        let mut breaker = InfiniteLoopBreaker::new(MAX_INVALID_BLOCKS);
         let size_before = self.data().len();
-        let prev_block = self.rfind_block_from(start as usize)?;
-        if prev_block >= start {
-            return Ok(0);
-        }
-        let block = self.decode_block(Range {
-            start: prev_block,
-            end: start,
-        })?;
+
+        let end = self.range().start as usize;
+        let mut start = end;
+
+        let block = loop {
+            start = self.rfind_block_from(start)?;
+            if start >= end {
+                return Ok(0);
+            }
+
+            let block_range = Range { start, end };
+            match self.decode_block(block_range) {
+                Ok(block) => break block,
+                Err(err) => {
+                    if let Err(_) = breaker.it() {
+                        return Err(err);
+                    }
+                }
+            }
+        };
+
         let mut new = block.data.clone();
         new.extend(self.decoded.iter());
         self.decoded = new;
