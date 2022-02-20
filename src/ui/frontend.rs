@@ -293,7 +293,6 @@ impl Frontend {
         let text_width = chunks[1].width as usize;
         let text_height = chunks[1].height as usize;
         self.update_backend_size(text_width, text_height);
-        let mut view_lines_per_line = Vec::new();
 
         let back = self.state_receiver.borrow();
         let backend_text = convert_tabs(
@@ -304,51 +303,18 @@ impl Frontend {
         let text = {
             let mut lines = Vec::new();
 
-            for mut line in backend_text.iter().map(|x| x.as_ref()) {
-                let lines_before = lines.len();
-                let mut offset = if self.wrap { 0 } else { self.right_offset };
-                let mut spans = Vec::new();
-
-                macro_rules! handle_line {
-                    ($data:expr, $style:expr) => {
-                        #[allow(unused_assignments)]
-                        if offset > 0 {
-                            let off = min(offset, $data.len());
-                            $data = &$data[off..];
-                            offset -= off;
-                        }
-
-                        if self.wrap {
-                            while let Some((char_pos, _)) = $data.char_indices().nth(
-                                text_width - spans.iter().fold(0, |acc, x: &Span| acc + x.width()),
-                            ) {
-                                let (left, right) = $data.split_at(char_pos);
-                                spans.push(Span::styled(left, $style));
-                                lines.push(Spans::from(spans.clone()));
-                                spans.clear();
-                                $data = right;
-                            }
-                        }
-                        spans.push(Span::styled($data, $style));
-                    };
-                }
-
-                if let Some(re) = self.search.as_ref() {
-                    while let Some(m) = re.find(line) {
-                        let mut before = &line[..m.start()];
-                        let mut match_content = m.as_str();
-
-                        handle_line![before, Style::default()];
-                        handle_line![match_content, Style::default().bg(Color::DarkGray)];
-
-                        line = &line.get(m.end()..).unwrap_or("");
-                    }
-                }
-                handle_line![line, Style::default()];
-
-                lines.push(Spans::from(spans));
-                view_lines_per_line.push(lines.len() - lines_before);
+            for line in backend_text.iter().map(|x| x.as_ref()) {
+                lines.push(self.color_line(line));
             }
+
+            if self.right_offset > 0 {
+                lines = self.shift_lines(lines, self.right_offset);
+            }
+
+            if self.wrap {
+                lines = self.wrap_lines(lines, text_width);
+            }
+
             Text::from(lines)
         };
 
@@ -428,6 +394,89 @@ impl Frontend {
         } else {
             "".to_string()
         }
+    }
+
+    fn color_line<'a>(&self, line: &'a str) -> Spans<'a> {
+        if let Some(re) = self.search.as_ref() {
+            self.color_linex_regex(line, re)
+        } else {
+            let mut spans = Vec::new();
+            spans.push(Span::raw(line));
+            Spans::from(spans)
+        }
+    }
+
+    fn color_linex_regex<'a>(&self, mut line: &'a str, re: &Regex) -> Spans<'a> {
+        let mut spans = Vec::new();
+
+        while let Some(m) = re.find(line) {
+            spans.push(Span::raw(&line[..m.start()]));
+            spans.push(Span::styled(
+                m.as_str(),
+                Style::default().bg(Color::DarkGray),
+            ));
+
+            line = &line.get(m.end()..).unwrap_or("");
+        }
+
+        spans.push(Span::raw(line));
+        return Spans::from(spans);
+    }
+
+    fn shift_lines<'a>(&self, lines: Vec<Spans<'a>>, offset: usize) -> Vec<Spans<'a>> {
+        let mut out_lines = Vec::new();
+        for spans in lines {
+            let mut out_spans = Vec::new();
+            let mut offset_left = offset;
+
+            for span in spans.0 {
+                if offset_left == 0 {
+                    out_spans.push(span);
+                } else if span.content.len() <= offset_left {
+                    offset_left -= span.content.len()
+                } else {
+                    out_spans.push(Span::styled(
+                        (&span.content[offset_left..]).to_string(),
+                        span.style,
+                    ));
+                    offset_left = 0;
+                }
+            }
+
+            out_lines.push(Spans::from(out_spans));
+        }
+        return out_lines;
+    }
+
+    fn wrap_lines<'a>(&self, lines: Vec<Spans<'a>>, width: usize) -> Vec<Spans<'a>> {
+        let mut out_lines = Vec::new();
+        let mut out_spans = Vec::new();
+
+        for spans in lines {
+            let mut width_left = width;
+            for span in spans.0 {
+                let mut content = span.content.as_ref();
+                while !content.is_empty() {
+                    if width_left >= content.len() {
+                        out_spans.push(Span::styled(content.to_string(), span.style));
+                        width_left -= content.len();
+                        content = "";
+                    } else {
+                        let (left, right) = content.split_at(width_left);
+                        out_spans.push(Span::styled(left.to_string(), span.style));
+                        content = right;
+
+                        out_lines.push(Spans::from(out_spans));
+                        out_spans = Vec::new();
+                        width_left = width;
+                    }
+                }
+            }
+            out_lines.push(Spans::from(out_spans));
+            out_spans = Vec::new();
+        }
+
+        return out_lines;
     }
 
     fn send_command(&self, command: Command) {

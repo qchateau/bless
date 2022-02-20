@@ -9,6 +9,7 @@ pub enum ViewError {
     EOF,
     NoMatchFound,
     Cancelled,
+    CurrentLineNotFound,
     InvalidRegex,
 }
 
@@ -18,6 +19,7 @@ impl Display for ViewError {
             Self::BOF => f.write_str("beginning of file"),
             Self::EOF => f.write_str("end of file"),
             Self::NoMatchFound => f.write_str("no match found"),
+            Self::CurrentLineNotFound => f.write_str("current line not found"),
             Self::Cancelled => f.write_str("cancelled"),
             Self::InvalidRegex => f.write_str("invalid regex"),
         }

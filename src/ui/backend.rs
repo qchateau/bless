@@ -31,6 +31,7 @@ pub enum Command {
     Resize(Option<usize>, usize),
     SaveMark(String),
     LoadMark(String),
+    ResolveCurrentLine,
 }
 
 pub struct BackendState {
@@ -240,6 +241,7 @@ impl CommandHandler {
                     Err(BackendError::UnknownMark(name).into())
                 }
             }
+            Command::ResolveCurrentLine => self.file_view.resolve_current_line().await,
         };
 
         return res;
