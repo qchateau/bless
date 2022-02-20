@@ -1,7 +1,10 @@
 use crate::{
-    errors::ViewError,
+    errors::Result,
     file_buffer::{make_file_buffer, FileBuffer},
-    utils::{decode_utf8, nth_or_last, InfiniteLoopBreaker},
+    file_view::ViewError,
+    utils::{
+        algorithm::nth_or_last, infinite_loop_breaker::InfiniteLoopBreaker, utf8::decode_utf8,
+    },
 };
 use human_bytes::human_bytes;
 use num_integer::div_ceil;
@@ -9,7 +12,6 @@ use regex::{bytes, Regex};
 use std::{
     borrow::Cow,
     fs::canonicalize,
-    io,
     io::ErrorKind,
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
@@ -34,7 +36,7 @@ pub struct FileView {
 }
 
 impl FileView {
-    pub async fn new(path: &str) -> io::Result<Self> {
+    pub async fn new(path: &str) -> Result<Self> {
         let real_file_path = canonicalize(path)?.to_string_lossy().to_string();
         let buffer = make_file_buffer(&real_file_path).await?;
         return Ok(Self {
@@ -59,11 +61,7 @@ impl FileView {
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    pub async fn view(
-        &mut self,
-        nlines: usize,
-        ncols: Option<usize>,
-    ) -> Result<Vec<String>, ViewError> {
+    pub async fn view(&mut self, nlines: usize, ncols: Option<usize>) -> Result<Vec<String>> {
         eprintln!("building view for {}x{}", nlines, ncols.unwrap_or(0));
 
         loop {
@@ -100,7 +98,7 @@ impl FileView {
             match self.load_next().await {
                 Ok(0) => break,
                 Ok(_) => (),
-                Err(e) => return Err(ViewError::Other(e.to_string())),
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -123,11 +121,8 @@ impl FileView {
             }
         }
     }
-    pub async fn up(&mut self, mut lines: u64) -> Result<(), ViewError> {
-        let mut breaker = InfiniteLoopBreaker::new(
-            10,
-            ViewError::Other("exceeded max number of iterations trying to go up".to_string()),
-        );
+    pub async fn up(&mut self, mut lines: u64) -> Result<()> {
+        let mut breaker = InfiniteLoopBreaker::new(10);
 
         eprintln!("up {}", lines);
         while lines > 0 {
@@ -148,14 +143,14 @@ impl FileView {
                         self.view_offset = 0;
                         self.current_line = Some(1);
                         if was_at_top {
-                            return Err(ViewError::BOF);
+                            return Err(ViewError::BOF.into());
                         } else {
                             lines -= 1;
                         }
                     }
                     Ok(_) => (),
                     Err(e) => {
-                        return Err(ViewError::Other(e.to_string()));
+                        return Err(e.into());
                     }
                 },
             }
@@ -166,7 +161,7 @@ impl FileView {
         &mut self,
         regex: &Regex,
         cancelled: &AtomicBool,
-    ) -> Result<(), ViewError> {
+    ) -> Result<()> {
         eprintln!("up to line matching {}", regex.as_str());
 
         let state = self.save_state();
@@ -179,11 +174,11 @@ impl FileView {
                     return self.jump_to_byte(m.start).await;
                 } else {
                     self.load_state(&state)?;
-                    return Err(ViewError::NoMatchFound);
+                    return Err(ViewError::NoMatchFound.into());
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
-                return Err(ViewError::Cancelled);
+                return Err(ViewError::Cancelled.into());
             }
             // the buffer doesn't implement find, do it ourself
             Err(e) if e.kind() == ErrorKind::Unsupported => {
@@ -191,7 +186,7 @@ impl FileView {
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
-                return Err(ViewError::Other(e.to_string()));
+                return Err(e.into());
             }
         }
 
@@ -210,24 +205,21 @@ impl FileView {
             self.view_offset = MATCH_WINDOW;
 
             match self.load_prev().await {
-                Ok(0) => break ViewError::NoMatchFound,
-                Err(e) => break ViewError::Other(e.to_string()),
+                Ok(0) => break ViewError::NoMatchFound.into(),
+                Err(e) => break e.into(),
                 Ok(_) => (),
             }
 
             if cancelled.load(Ordering::Acquire) {
-                break ViewError::Cancelled;
+                break ViewError::Cancelled.into();
             }
         };
 
         self.load_state(&state)?;
         return Err(err);
     }
-    pub async fn down(&mut self, mut lines: u64) -> Result<(), ViewError> {
-        let mut breaker = InfiniteLoopBreaker::new(
-            10,
-            ViewError::Other("exceeded max number of iterations trying to go down".to_string()),
-        );
+    pub async fn down(&mut self, mut lines: u64) -> Result<()> {
+        let mut breaker = InfiniteLoopBreaker::new(10);
 
         eprintln!("down {}", lines);
         while lines > 0 {
@@ -243,9 +235,9 @@ impl FileView {
                     breaker.reset();
                 }
                 None => match self.load_next().await {
-                    Ok(0) => return Err(ViewError::EOF),
+                    Ok(0) => return Err(ViewError::EOF.into()),
                     Ok(_) => (),
-                    Err(e) => return Err(ViewError::Other(e.to_string())),
+                    Err(e) => return Err(e.into()),
                 },
             }
         }
@@ -256,7 +248,7 @@ impl FileView {
         regex: &Regex,
         skip_current: bool,
         cancelled: &AtomicBool,
-    ) -> Result<(), ViewError> {
+    ) -> Result<()> {
         eprintln!("down to line matching {}", regex.as_str());
 
         let state = self.save_state();
@@ -272,11 +264,11 @@ impl FileView {
                     return self.jump_to_byte(m.start).await;
                 } else {
                     self.load_state(&state)?;
-                    return Err(ViewError::NoMatchFound);
+                    return Err(ViewError::NoMatchFound.into());
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
-                return Err(ViewError::Cancelled);
+                return Err(ViewError::Cancelled.into());
             }
             // the buffer doesn't implement find, do it ourself
             Err(e) if e.kind() == ErrorKind::Unsupported => {
@@ -284,7 +276,7 @@ impl FileView {
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
-                return Err(ViewError::Other(e.to_string()));
+                return Err(e.into());
             }
         }
 
@@ -303,20 +295,20 @@ impl FileView {
             self.view_offset += self.current_view().len().saturating_sub(MATCH_WINDOW);
 
             match self.load_next().await {
-                Ok(0) => break ViewError::NoMatchFound,
-                Err(e) => break ViewError::Other(e.to_string()),
+                Ok(0) => break ViewError::NoMatchFound.into(),
+                Err(e) => break e.into(),
                 Ok(_) => (),
             }
 
             if cancelled.load(Ordering::Acquire) {
-                break ViewError::Cancelled;
+                break ViewError::Cancelled.into();
             }
         };
 
         self.load_state(&state)?;
         return Err(err);
     }
-    pub async fn jump_to_line(&mut self, line: i64) -> Result<(), ViewError> {
+    pub async fn jump_to_line(&mut self, line: i64) -> Result<()> {
         eprintln!("jump to line {}", line);
 
         //  move to the right "side" of the file
@@ -345,12 +337,10 @@ impl FileView {
             Ok(())
         };
     }
-    pub async fn jump_to_byte(&mut self, bytes: u64) -> Result<(), ViewError> {
+    pub async fn jump_to_byte(&mut self, bytes: u64) -> Result<()> {
         eprintln!("jump to byte {}", bytes);
 
-        self.buffer
-            .jump(bytes)
-            .map_err(|e| ViewError::Other(e.to_string()))?;
+        self.buffer.jump(bytes).map_err(|e| Box::new(e))?;
         self.view_offset = 0;
 
         if bytes == 0 {
@@ -361,17 +351,17 @@ impl FileView {
             self.up(1).await
         }
     }
-    pub async fn top(&mut self) -> Result<(), ViewError> {
+    pub async fn top(&mut self) -> Result<()> {
         eprintln!("jump to top");
 
         self.jump_to_byte(0).await
     }
-    pub async fn bottom(&mut self) -> Result<(), ViewError> {
+    pub async fn bottom(&mut self) -> Result<()> {
         eprintln!("jump to bottom");
 
         self.buffer
             .jump(self.buffer.total_size().await - 1)
-            .map_err(|e| ViewError::Other(e.to_string()))?;
+            .map_err(|e| Box::new(e))?;
         self.view_offset = self.buffer.data().len();
         self.current_line = Some(0);
         Ok(())
@@ -383,12 +373,12 @@ impl FileView {
             buffer_pos: self.buffer.range().start,
         };
     }
-    pub fn load_state(&mut self, state: &ViewState) -> Result<(), ViewError> {
+    pub fn load_state(&mut self, state: &ViewState) -> Result<()> {
         self.view_offset = state.view_offset;
         self.current_line = state.current_line;
         self.buffer
             .jump(state.buffer_pos)
-            .map_err(|e| ViewError::Other(e.to_string()))?;
+            .map_err(|e| Box::new(e))?;
         Ok(())
     }
     fn current_view(&self) -> Cow<str> {
@@ -423,13 +413,13 @@ impl FileView {
         let end = self.view_offset as u64;
         self.maybe_shrink(Range { start, end });
     }
-    async fn load_next(&mut self) -> io::Result<usize> {
+    async fn load_next(&mut self) -> Result<usize> {
         let load_size = self.buffer.load_next().await?;
         self.maybe_shrink_left();
         eprintln!("loaded {} next bytes", load_size);
         return Ok(load_size);
     }
-    async fn load_prev(&mut self) -> io::Result<usize> {
+    async fn load_prev(&mut self) -> Result<usize> {
         let load_size = self.buffer.load_prev().await?;
         self.view_offset += load_size;
         self.maybe_shrink_right();

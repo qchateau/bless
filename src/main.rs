@@ -5,10 +5,10 @@ mod term;
 mod ui;
 mod utils;
 
-use crate::{term::ConfigureTerm, ui::Ui};
+use crate::{errors::Result, term::ConfigureTerm, ui::Ui};
 use clap::Parser;
 use std::{
-    io, panic,
+    panic,
     sync::{Arc, Mutex},
 };
 
@@ -19,7 +19,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> Result<()> {
     let args = Args::parse();
     let term = Arc::new(Mutex::new(Some(ConfigureTerm::new()?)));
     let term_copy = term.clone();

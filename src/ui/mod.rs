@@ -1,15 +1,18 @@
 mod backend;
+mod errors;
 mod frontend;
 
-use std::io;
+use crate::{
+    errors::Result,
+    ui::errors::BackendError,
+    ui::{
+        backend::{Backend, BackendState},
+        frontend::Frontend,
+    },
+};
 use tokio::{
     select,
     sync::{mpsc, watch},
-};
-
-use crate::ui::{
-    backend::{Backend, BackendState},
-    frontend::Frontend,
 };
 
 pub struct Ui {
@@ -18,7 +21,7 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub async fn new(path: &str) -> io::Result<Self> {
+    pub async fn new(path: &str) -> Result<Self> {
         let (state_sender, state_receiver) = watch::channel(BackendState::new());
         let (command_sender, command_receiver) = mpsc::unbounded_channel();
         let (cancel_sender, cancel_receiver) = mpsc::unbounded_channel();
@@ -26,13 +29,10 @@ impl Ui {
         let frontend = Frontend::new(command_sender, cancel_sender, state_receiver)?;
         return Ok(Self { backend, frontend });
     }
-    pub async fn run(&mut self) -> io::Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         return select! {
-            res = self.frontend.run() => match res {
-                Err(err) => Err(io::Error::new(io::ErrorKind::Other, format!("frontend stopped: {}", err))),
-                Ok(_) => Ok(())
-            },
-            _ = self.backend.run() => Err(io::Error::new(io::ErrorKind::Other, "backend stopped"))
+            res = self.frontend.run() => res,
+            res = self.backend.run() => res.and(Err(BackendError::Stopped.into())),
         };
     }
 }

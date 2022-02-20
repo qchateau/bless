@@ -1,8 +1,8 @@
 use regex::Regex;
 use std::{
     collections::HashMap,
+    error::Error,
     fs::canonicalize,
-    io,
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -13,8 +13,9 @@ use tokio::{
 };
 
 use crate::{
-    errors::ViewError,
-    file_view::{FileView, ViewState},
+    errors::Result,
+    file_view::{FileView, ViewError, ViewState},
+    ui::errors::{BackendError, ChannelError},
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -31,12 +32,11 @@ pub enum Command {
     LoadMark(String),
 }
 
-#[derive(Clone)]
 pub struct BackendState {
     pub file_path: String,
     pub real_file_path: String,
     pub file_size: u64,
-    pub errors: Vec<ViewError>,
+    pub errors: Vec<Rc<Box<dyn Error>>>,
     pub current_line: Option<i64>,
     pub offset: u64,
     pub text: Vec<String>,
@@ -70,7 +70,7 @@ struct CommandHandler {
     cancelled: Rc<AtomicBool>,
     marks: HashMap<String, ViewState>,
     follow: bool,
-    command_errors: Vec<ViewError>,
+    command_errors: Vec<Rc<Box<dyn Error>>>,
 }
 
 struct CancelHandler {
@@ -89,7 +89,7 @@ impl Backend {
         cancel_receiver: UnboundedReceiver<()>,
         state_sender: Sender<BackendState>,
         path: &str,
-    ) -> io::Result<Self> {
+    ) -> Result<Self> {
         let cancelled = Rc::from(AtomicBool::from(false));
         let file_view = FileView::new(path).await?;
         return Ok(Self {
@@ -112,7 +112,7 @@ impl Backend {
         });
     }
 
-    pub async fn run(&mut self) -> Result<(), ViewError> {
+    pub async fn run(&mut self) -> Result<()> {
         select! {
             res = self.command_handler.run() => res,
             res = self.cancel_handler.run() => res,
@@ -121,18 +121,18 @@ impl Backend {
 }
 
 impl CancelHandler {
-    async fn run(&mut self) -> Result<(), ViewError> {
+    async fn run(&mut self) -> Result<()> {
         loop {
             match self.cancel_receiver.recv().await {
                 Some(_) => self.cancelled.store(true, Ordering::Release),
-                None => return Err(ViewError::Other("cancel channel error".to_string())),
+                None => return Err(ChannelError::Cancel.into()),
             }
         }
     }
 }
 
 impl CommandHandler {
-    async fn run(&mut self) -> Result<(), ViewError> {
+    async fn run(&mut self) -> Result<()> {
         self.send_state().await?;
         let mut prev_file_size = 0;
 
@@ -149,12 +149,12 @@ impl CommandHandler {
                  msg = self.command_receiver.recv() => {
                     let command = match msg {
                         Some(command) => command,
-                        None => return Err(ViewError::Other("command channel error".to_string())),
+                        None => return Err(ChannelError::Command.into()),
                     };
 
                     self.command_errors.clear();
                     if let Err(e) = self.handle_command(command).await {
-                        self.command_errors.push(e);
+                        self.command_errors.push(Rc::from(e));
                     }
                 },
                 _ = time::sleep(Duration::from_millis(sleep_time_ms)) => {
@@ -166,9 +166,7 @@ impl CommandHandler {
                 },
             }
 
-            self.maybe_reload_file()
-                .await
-                .map_err(|e| ViewError::Other(e.to_string()))?;
+            self.maybe_reload_file().await?;
 
             if self.follow {
                 while self.file_view.down(1_000_000).await.is_ok() {}
@@ -178,7 +176,7 @@ impl CommandHandler {
         }
     }
 
-    async fn handle_command(&mut self, command: Command) -> Result<(), ViewError> {
+    async fn handle_command(&mut self, command: Command) -> Result<()> {
         eprintln!("command: {:?}", command);
         let res = match command {
             Command::Follow(follow) => {
@@ -238,7 +236,7 @@ impl CommandHandler {
                 if let Some(state) = self.marks.get(&name) {
                     self.file_view.load_state(state)
                 } else {
-                    Err(ViewError::UnknownMark(name))
+                    Err(BackendError::UnknownMark(name).into())
                 }
             }
         };
@@ -256,10 +254,11 @@ impl CommandHandler {
         state.text = match self.file_view.view(self.view_height, self.view_width).await {
             Ok(x) => x,
             Err(e) => {
-                state.errors.push(e);
+                state.errors.push(Rc::from(e));
                 Vec::new()
             }
         };
+        eprintln!("{}", state.text.join("\n"));
 
         state.file_size = self.file_view.file_size().await;
         state.current_line = self.file_view.current_line();
@@ -271,21 +270,21 @@ impl CommandHandler {
         if offset_before > state.offset {
             // building the view shifted the view upwards,
             // we hit the EOF
-            state.errors.push(ViewError::EOF);
+            state.errors.push(Rc::new(Box::from(ViewError::EOF)));
         }
 
         return state;
     }
 
-    async fn send_state(&mut self) -> Result<(), ViewError> {
+    async fn send_state(&mut self) -> Result<()> {
         let state = self.generate_state().await;
         self.state_sender
             .send(state)
-            .map_err(|_| ViewError::Other("state channel error".to_string()))?;
+            .map_err(|_| ChannelError::State)?;
         Ok(())
     }
 
-    async fn maybe_reload_file(&mut self) -> io::Result<()> {
+    async fn maybe_reload_file(&mut self) -> Result<()> {
         let real_file_path = canonicalize(&self.file_path)?.to_string_lossy().to_string();
         if real_file_path != self.file_view.real_file_path() {
             eprintln!("reloading file");

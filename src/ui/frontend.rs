@@ -20,8 +20,12 @@ use tui::{
 };
 
 use crate::{
-    errors::ViewError,
-    ui::backend::{BackendState, Command},
+    errors::Result,
+    file_view::ViewError,
+    ui::{
+        backend::{BackendState, Command},
+        errors::{ChannelError, FrontendError},
+    },
 };
 
 const FAST_SCROLL_LINES: i64 = 5;
@@ -73,10 +77,9 @@ impl Frontend {
             self.send_command(self.last_sent_resize.clone());
         }
     }
-    pub async fn run(&mut self) -> Result<(), ViewError> {
+    pub async fn run(&mut self) -> Result<()> {
         let mut events_reader = EventStream::new();
-        let mut signals_reader = Signals::new(TERM_SIGNALS)
-            .map_err(|e| ViewError::Other(format!("failed to install signal handler: {}", e)))?;
+        let mut signals_reader = Signals::new(TERM_SIGNALS)?;
 
         let term_size = self.terminal.as_ref().unwrap().size().unwrap();
         self.update_backend_size(term_size.width.into(), term_size.height.into());
@@ -89,19 +92,19 @@ impl Frontend {
                     Some(Ok(Event::Key(key))) => self.handle_key(key),
                     Some(Ok(Event::Resize(_, height))) => self.send_command(Command::Resize(None, height as usize)),
                     Some(Ok(_)) => {},
-                    Some(Err(e)) => return Err(ViewError::Other(format!("event error: {}", e))),
-                    None => return Err(ViewError::Other("end of event stream".to_string())),
+                    Some(Err(e)) => return Err(e.into()),
+                    None => return Err(FrontendError::EndOfEventStream.into()),
                 },
                 maybe_state = self.state_receiver.changed().fuse() => match maybe_state {
                     Ok(_) => (),
-                    Err(e) => return Err(ViewError::Other(format!("channel error: {}", e)))
+                    Err(_) => return Err(ChannelError::State.into())
                 },
                 maybe_signal = signals_reader.next().fuse() => match maybe_signal {
                     Some(signal) => {
                         eprintln!("received signal {}", signal);
                         return Ok(());
                     },
-                    None => return Err(ViewError::Other("signal handler interrupted".to_string()))
+                    None => return Err(FrontendError::EndOfSignalStream.into())
                 },
             }
         }
@@ -109,7 +112,7 @@ impl Frontend {
         return Ok(());
     }
 
-    fn update(&mut self) -> Result<(), ViewError> {
+    fn update(&mut self) -> Result<()> {
         let mut terminal = self.terminal.take().unwrap();
         terminal.draw(|f| self.refresh(f)).unwrap();
         self.terminal = Some(terminal);
@@ -390,8 +393,8 @@ impl Frontend {
         let back_errors = back
             .errors
             .iter()
-            .filter(|x| match x {
-                ViewError::EOF | ViewError::BOF => {
+            .filter(|x| match x.downcast_ref::<ViewError>() {
+                Some(ViewError::EOF) | Some(ViewError::BOF) => {
                     matches![*self.last_sent_command.borrow(), Command::MoveLine(_)]
                 }
                 _ => true,
