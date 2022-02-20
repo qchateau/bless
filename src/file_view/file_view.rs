@@ -64,25 +64,6 @@ impl FileView {
         return self.buffer.range().start
             + (self.view_offset as f64 * buffer_size as f64 / data_size as f64) as u64;
     }
-    pub fn raw_offset(&self) -> u64 {
-        return self.buffer.range().start + self.view_offset as u64;
-    }
-    pub async fn resolve_current_line(&mut self) -> Result<()> {
-        if self.current_line.unwrap_or(-1) > 0 {
-            return Ok(());
-        }
-        let state = self.save_state();
-        let state_raw_offset = state.buffer_pos + state.view_offset as u64;
-        self.top().await?;
-        while self.raw_offset() < state_raw_offset {
-            self.down(1).await?;
-        }
-        if self.raw_offset() != state_raw_offset {
-            self.load_state(&state)?;
-            return Err(ViewError::CurrentLineNotFound.into());
-        }
-        return Ok(());
-    }
     pub async fn view(&mut self, nlines: usize, ncols: Option<usize>) -> Result<Vec<String>> {
         info!("building view for {}x{}", nlines, ncols.unwrap_or(0));
 

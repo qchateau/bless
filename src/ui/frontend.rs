@@ -8,7 +8,6 @@ use signal_hook_async_std::Signals;
 use std::{
     borrow::Cow,
     cell::RefCell,
-    cmp::min,
     io::{self, Stdout},
 };
 use tokio::sync::{mpsc::UnboundedSender, watch::Receiver};
