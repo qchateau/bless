@@ -4,12 +4,15 @@ use memmap2::{Advice, Mmap, MmapOptions};
 use regex::bytes::Regex;
 use std::{
     cmp::min,
-    fs::File,
-    io::{self, Error, ErrorKind, Read, Result, Seek},
+    io::{self, ErrorKind},
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
 };
-use tokio::task::yield_now;
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
+    task::yield_now,
+};
 
 const BUFFER_SIZE: usize = 0x10000;
 const FIND_WINDOW: usize = 0x100000;
@@ -23,15 +26,15 @@ pub struct FileBuffer {
 }
 
 impl FileBuffer {
-    pub async fn new(path: &str) -> Result<Self> {
-        let file = File::open(path)?;
+    pub async fn new(path: &str) -> io::Result<Self> {
+        let file = File::open(path).await?;
         return Ok(Self {
             buffer_offset: 0,
             buffer: DeVec::new(),
             file,
         });
     }
-    fn mmap(&self, advice: Advice) -> Result<Mmap> {
+    fn mmap(&self, advice: Advice) -> io::Result<Mmap> {
         let mmap = unsafe { MmapOptions::new().map(&self.file) }?;
         mmap.advise(advice)?;
         return Ok(mmap);
@@ -55,11 +58,9 @@ impl super::FileBuffer for FileBuffer {
         return Ok(bytes);
     }
     async fn total_size(&self) -> u64 {
-        return self.file.metadata().unwrap().len();
+        return self.file.metadata().await.unwrap().len();
     }
     async fn load_prev(&mut self) -> io::Result<usize> {
-        yield_now().await;
-
         let try_read_size = min(self.buffer_offset as usize, BUFFER_SIZE);
         self.buffer.resize_front(self.buffer.len() + try_read_size);
 
@@ -68,8 +69,8 @@ impl super::FileBuffer for FileBuffer {
 
         let read_offset = self.buffer_offset - try_read_size as u64;
 
-        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
-            Ok(_) => self.file.read(buf),
+        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)).await {
+            Ok(_) => self.file.read(buf).await,
             Err(e) => Err(e),
         };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
@@ -82,8 +83,6 @@ impl super::FileBuffer for FileBuffer {
         return read_size_res;
     }
     async fn load_next(&mut self) -> std::io::Result<usize> {
-        yield_now().await;
-
         let size_before = self.buffer.len();
         let read_offset = self.range().end;
         self.buffer.resize_back(size_before + BUFFER_SIZE);
@@ -92,8 +91,8 @@ impl super::FileBuffer for FileBuffer {
         let buf_start = buf.len() - BUFFER_SIZE;
         let buf = &mut buf[buf_start..];
 
-        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)) {
-            Ok(_) => self.file.read(buf),
+        let read_size_res = match self.file.seek(io::SeekFrom::Start(read_offset)).await {
+            Ok(_) => self.file.read(buf).await,
             Err(e) => Err(e),
         };
         let read_size = *read_size_res.as_ref().unwrap_or(&0);
@@ -118,7 +117,7 @@ impl super::FileBuffer for FileBuffer {
             end = min(begin + FIND_WINDOW, mmap.len());
             yield_now().await;
             if cancelled.load(Ordering::Acquire) {
-                return Err(Error::from(ErrorKind::Interrupted));
+                return Err(io::Error::from(ErrorKind::Interrupted));
             }
         }
         return Ok(None);
@@ -145,7 +144,7 @@ impl super::FileBuffer for FileBuffer {
             begin = end.saturating_sub(FIND_WINDOW);
             yield_now().await;
             if cancelled.load(Ordering::Acquire) {
-                return Err(Error::from(ErrorKind::Interrupted));
+                return Err(io::Error::from(ErrorKind::Interrupted));
             }
         }
         return Ok(None);

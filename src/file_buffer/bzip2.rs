@@ -8,13 +8,12 @@ use regex::bytes::Regex;
 use std::{
     collections::VecDeque,
     fmt,
-    fs::File,
-    io::{Error, ErrorKind, Read, Result},
+    io::{self, ErrorKind},
     ops::Range,
     sync::atomic::AtomicBool,
     vec::Vec,
 };
-use tokio::task::yield_now;
+use tokio::{fs::File, io::AsyncReadExt, task::yield_now};
 
 const ALLOC_SIZE: usize = 0x100000;
 const MAGIC_RFIND_WINDOW: usize = 0x10000;
@@ -44,11 +43,11 @@ impl fmt::Debug for Bz2FileBuffer {
 }
 
 impl Bz2FileBuffer {
-    pub async fn new(path: &str) -> Result<Self> {
-        let mut file = File::open(path)?;
+    pub async fn new(path: &str) -> io::Result<Self> {
+        let mut file = File::open(path).await?;
         let mut header = vec![0u8; 4];
         let magic_re: Regex = Regex::new(r"\x31\x41\x59\x26\x53\x59").unwrap();
-        file.read_exact(header.as_mut_slice()).unwrap();
+        file.read_exact(header.as_mut_slice()).await.unwrap();
         return Ok(Self {
             file,
             header,
@@ -60,7 +59,7 @@ impl Bz2FileBuffer {
     pub fn is_valid(&self) -> bool {
         return Regex::new("BZ[h0][1-9]").unwrap().is_match(&self.header);
     }
-    fn mmap(&self, advice: Advice) -> Result<Mmap> {
+    fn mmap(&self, advice: Advice) -> io::Result<Mmap> {
         let mmap = unsafe { MmapOptions::new().map(&self.file) }?;
         mmap.advise(advice)?;
         return Ok(mmap);
@@ -71,7 +70,7 @@ impl Bz2FileBuffer {
             self.decoded.extend(block.data.iter());
         }
     }
-    fn decode_block(&self, file_range: Range<usize>) -> Result<Block> {
+    fn decode_block(&self, file_range: Range<usize>) -> io::Result<Block> {
         let mut block = Block {
             file_range,
             data: Vec::new(),
@@ -99,7 +98,7 @@ impl Bz2FileBuffer {
             }
         }
     }
-    fn find_block_from(&self, byte: usize) -> Result<usize> {
+    fn find_block_from(&self, byte: usize) -> io::Result<usize> {
         debug!("searching next block from {}", byte);
         let mmap = self.mmap(Advice::Sequential)?;
         if let Some(m) = self.magic_re.find(&mmap[byte..]) {
@@ -110,7 +109,7 @@ impl Bz2FileBuffer {
             return Ok(mmap.len() - 1);
         }
     }
-    fn rfind_block_from(&self, byte: usize) -> Result<usize> {
+    fn rfind_block_from(&self, byte: usize) -> io::Result<usize> {
         debug!("searching previous block from {}", byte);
         let mmap = self.mmap(Advice::Sequential)?;
         let mut end = byte;
@@ -151,7 +150,7 @@ impl FileBuffer for Bz2FileBuffer {
                 .unwrap_or(self.header.len() as u64),
         };
     }
-    fn jump(&mut self, byte: u64) -> Result<u64> {
+    fn jump(&mut self, byte: u64) -> io::Result<u64> {
         let block = self.decode_block(Range {
             start: self.rfind_block_from(byte as usize)?,
             end: self.find_block_from(byte as usize)?,
@@ -163,9 +162,9 @@ impl FileBuffer for Bz2FileBuffer {
         return Ok(self.blocks[0].file_range.start as u64);
     }
     async fn total_size(&self) -> u64 {
-        return self.file.metadata().unwrap().len();
+        return self.file.metadata().await.unwrap().len();
     }
-    async fn load_next(&mut self) -> Result<usize> {
+    async fn load_next(&mut self) -> io::Result<usize> {
         debug!("load next");
         yield_now().await;
 
@@ -183,7 +182,7 @@ impl FileBuffer for Bz2FileBuffer {
         self.blocks.push_back(block);
         return Ok(self.data().len() - size_before);
     }
-    async fn load_prev(&mut self) -> Result<usize> {
+    async fn load_prev(&mut self) -> io::Result<usize> {
         debug!("load previous");
         yield_now().await;
 
@@ -203,11 +202,19 @@ impl FileBuffer for Bz2FileBuffer {
         self.blocks.push_front(block);
         return Ok(self.data().len() - size_before);
     }
-    async fn find(&mut self, _re: &Regex, _cancelled: &AtomicBool) -> Result<Option<Range<u64>>> {
-        return Err(Error::from(ErrorKind::Unsupported));
+    async fn find(
+        &mut self,
+        _re: &Regex,
+        _cancelled: &AtomicBool,
+    ) -> io::Result<Option<Range<u64>>> {
+        return Err(io::Error::from(ErrorKind::Unsupported));
     }
-    async fn rfind(&mut self, _re: &Regex, _cancelled: &AtomicBool) -> Result<Option<Range<u64>>> {
-        return Err(Error::from(ErrorKind::Unsupported));
+    async fn rfind(
+        &mut self,
+        _re: &Regex,
+        _cancelled: &AtomicBool,
+    ) -> io::Result<Option<Range<u64>>> {
+        return Err(io::Error::from(ErrorKind::Unsupported));
     }
     fn shrink_to(&mut self, range: Range<u64>) -> Range<u64> {
         assert!(range.start <= range.end && range.end <= self.data().len() as u64);
