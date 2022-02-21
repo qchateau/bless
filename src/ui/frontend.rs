@@ -32,6 +32,7 @@ use crate::{
 
 const FAST_SCROLL_LINES: i64 = 5;
 
+#[derive(PartialEq, Debug)]
 enum ColorMode {
     Default,
     Log,
@@ -54,6 +55,7 @@ pub struct Frontend {
     command_sender: RefCell<UnboundedSender<Command>>,
     cancel_sender: RefCell<UnboundedSender<()>>,
     state_receiver: Receiver<BackendState>,
+    log_colors: Vec<(Regex, Style)>,
 }
 
 impl Frontend {
@@ -64,6 +66,7 @@ impl Frontend {
     ) -> io::Result<Self> {
         let crossterm_backend = backend::CrosstermBackend::new(io::stdout());
         let terminal = Terminal::new(crossterm_backend)?;
+        let log_colors = Frontend::make_log_colors();
         return Ok(Self {
             terminal: Some(terminal),
             command: String::new(),
@@ -80,7 +83,37 @@ impl Frontend {
             command_sender: RefCell::from(command_sender),
             cancel_sender: RefCell::from(cancel_sender),
             state_receiver,
+            log_colors,
         });
+    }
+
+    fn make_log_colors() -> Vec<(Regex, Style)> {
+        let mut colors = Vec::new();
+        colors.push((
+            Regex::new("(?i)trace").unwrap(),
+            Style::default().fg(Color::Cyan),
+        ));
+        colors.push((
+            Regex::new("(?i)debug").unwrap(),
+            Style::default().fg(Color::Green),
+        ));
+        colors.push((
+            Regex::new("(?i)info").unwrap(),
+            Style::default().fg(Color::Gray),
+        ));
+        colors.push((
+            Regex::new("(?i)warn").unwrap(),
+            Style::default().fg(Color::Yellow),
+        ));
+        colors.push((
+            Regex::new("(?i)error").unwrap(),
+            Style::default().fg(Color::Red),
+        ));
+        colors.push((
+            Regex::new("(?i)fatal|critical").unwrap(),
+            Style::default().fg(Color::LightRed),
+        ));
+        return colors;
     }
 
     fn update_backend_size(&mut self, width: usize, height: usize) {
@@ -342,6 +375,8 @@ impl Frontend {
         }
         if let Some(re) = &self.search {
             flags.push(format!("/{}", re.to_string()));
+        } else if self.color_mode != ColorMode::Default {
+            flags.push(format!("{:?}", self.color_mode))
         }
 
         let header_title = format!(
@@ -438,7 +473,15 @@ impl Frontend {
     }
 
     fn color_line_log<'a>(&self, line: &'a str) -> Spans<'a> {
-        self.color_line_default(line)
+        let mut spans = Vec::new();
+        for (regex, style) in self.log_colors.iter() {
+            if regex.is_match(line) {
+                spans.push(Span::styled(line, style.clone()));
+                return Spans::from(spans);
+            }
+        }
+        spans.push(Span::raw(line));
+        return Spans::from(spans);
     }
 
     fn color_line_similariry<'a>(&self, line: &'a str) -> Spans<'a> {
