@@ -1,13 +1,14 @@
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use futures::{future::FutureExt, select, StreamExt};
 use human_bytes::human_bytes;
-use log::info;
+use log::{debug, info};
 use regex::Regex;
 use signal_hook::consts::TERM_SIGNALS;
 use signal_hook_async_std::Signals;
 use std::{
     borrow::Cow,
     cell::RefCell,
+    collections::HashMap,
     io::{self, Stdout},
 };
 use tokio::sync::{mpsc::UnboundedSender, watch::Receiver};
@@ -31,6 +32,7 @@ use crate::{
 };
 
 const FAST_SCROLL_LINES: i64 = 5;
+const WORD_SEPARATOR: &str = "`~!@#$%^&*()=+[{]}|;:'\",.<>?";
 
 #[derive(PartialEq, Debug)]
 enum ColorMode {
@@ -56,6 +58,8 @@ pub struct Frontend {
     cancel_sender: RefCell<UnboundedSender<()>>,
     state_receiver: Receiver<BackendState>,
     log_colors: Vec<(Regex, Style)>,
+    similarity_colors: Vec<Style>,
+    last_colors: RefCell<HashMap<String, Style>>,
 }
 
 impl Frontend {
@@ -67,6 +71,7 @@ impl Frontend {
         let crossterm_backend = backend::CrosstermBackend::new(io::stdout());
         let terminal = Terminal::new(crossterm_backend)?;
         let log_colors = Frontend::make_log_colors();
+        let similarity_colors = Frontend::make_similarity_colors();
         return Ok(Self {
             terminal: Some(terminal),
             command: String::new(),
@@ -84,36 +89,57 @@ impl Frontend {
             cancel_sender: RefCell::from(cancel_sender),
             state_receiver,
             log_colors,
+            similarity_colors,
+            last_colors: RefCell::from(HashMap::new()),
         });
     }
 
     fn make_log_colors() -> Vec<(Regex, Style)> {
-        let mut colors = Vec::new();
-        colors.push((
-            Regex::new("(?i)trace").unwrap(),
-            Style::default().fg(Color::Cyan),
-        ));
-        colors.push((
-            Regex::new("(?i)debug").unwrap(),
-            Style::default().fg(Color::Green),
-        ));
-        colors.push((
-            Regex::new("(?i)info").unwrap(),
-            Style::default().fg(Color::Gray),
-        ));
-        colors.push((
-            Regex::new("(?i)warn").unwrap(),
-            Style::default().fg(Color::Yellow),
-        ));
-        colors.push((
-            Regex::new("(?i)error").unwrap(),
+        return vec![
+            (
+                Regex::new("(?i)trace").unwrap(),
+                Style::default().fg(Color::Cyan),
+            ),
+            (
+                Regex::new("(?i)debug").unwrap(),
+                Style::default().fg(Color::Green),
+            ),
+            (
+                Regex::new("(?i)info").unwrap(),
+                Style::default().fg(Color::Gray),
+            ),
+            (
+                Regex::new("(?i)warn").unwrap(),
+                Style::default().fg(Color::Yellow),
+            ),
+            (
+                Regex::new("(?i)error").unwrap(),
+                Style::default().fg(Color::Red),
+            ),
+            (
+                Regex::new("(?i)fatal|critical").unwrap(),
+                Style::default().fg(Color::LightRed),
+            ),
+        ];
+    }
+
+    fn make_similarity_colors() -> Vec<Style> {
+        return vec![
             Style::default().fg(Color::Red),
-        ));
-        colors.push((
-            Regex::new("(?i)fatal|critical").unwrap(),
+            Style::default().fg(Color::Green),
+            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::Blue),
+            Style::default().fg(Color::Magenta),
+            Style::default().fg(Color::Cyan),
+            Style::default().fg(Color::Gray),
+            Style::default().fg(Color::DarkGray),
             Style::default().fg(Color::LightRed),
-        ));
-        return colors;
+            Style::default().fg(Color::LightGreen),
+            Style::default().fg(Color::LightYellow),
+            Style::default().fg(Color::LightBlue),
+            Style::default().fg(Color::LightMagenta),
+            Style::default().fg(Color::LightCyan),
+        ];
     }
 
     fn update_backend_size(&mut self, width: usize, height: usize) {
@@ -346,11 +372,12 @@ impl Frontend {
         );
 
         let text = {
-            let mut lines = Vec::new();
+            let lines: Vec<&str> = backend_text.iter().map(|x| x.as_ref()).collect();
+            let mut lines = self.color_lines(lines);
 
-            for line in backend_text.iter().map(|x| x.as_ref()) {
-                lines.push(self.color_line(line));
-            }
+            // for line in backend_text.iter().map(|x| x.as_ref()) {
+            //     lines.push(self.color_line(line));
+            // }
 
             if self.right_offset > 0 {
                 lines = self.shift_lines(lines, self.right_offset);
@@ -443,14 +470,23 @@ impl Frontend {
         }
     }
 
-    fn color_line<'a>(&self, line: &'a str) -> Spans<'a> {
+    fn color_lines<'a>(&self, lines: Vec<&'a str>) -> Vec<Spans<'a>> {
         if let Some(re) = self.search.as_ref() {
-            self.color_line_regex(line, re)
+            return lines
+                .iter()
+                .map(|lines| self.color_line_regex(lines, re))
+                .collect();
         } else {
             match self.color_mode {
-                ColorMode::Log => self.color_line_log(line),
-                ColorMode::Similarity => self.color_line_similariry(line),
-                _ => self.color_line_default(line),
+                ColorMode::Similarity => self.color_lines_similarity(lines),
+                ColorMode::Log => lines
+                    .iter()
+                    .map(|lines| self.color_line_log(lines))
+                    .collect(),
+                _ => lines
+                    .iter()
+                    .map(|line| self.color_line_default(line))
+                    .collect(),
             }
         }
     }
@@ -484,8 +520,104 @@ impl Frontend {
         return Spans::from(spans);
     }
 
-    fn color_line_similariry<'a>(&self, line: &'a str) -> Spans<'a> {
-        self.color_line_default(line)
+    fn color_lines_similarity<'a>(&self, lines: Vec<&'a str>) -> Vec<Spans<'a>> {
+        // collect interesting words
+        let mut words: HashMap<&str, u64> = HashMap::new();
+        for word in lines
+            .iter()
+            .map(|line| line.split_whitespace())
+            .flatten()
+            .map(|word| word.split(|x| WORD_SEPARATOR.contains(x)))
+            .flatten()
+            .filter(|word| word.len() >= 4)
+        {
+            *words.entry(word).or_default() += 1;
+        }
+        let words: Vec<String> = words
+            .into_iter()
+            .filter(|(_, cnt)| *cnt > 1)
+            .map(|(word, _)| word.to_string())
+            .collect();
+        debug!("words: {:?}", words);
+
+        // copy the previous words and their style
+        let mut word_styles = self.last_colors.borrow().clone();
+
+        // evict words that have disappeared
+        let to_remove: Vec<String> = word_styles
+            .keys()
+            .filter(|&word| !word.contains(word))
+            .map(|x| x.clone())
+            .collect();
+        for word in to_remove {
+            word_styles.remove(&word);
+        }
+
+        // add the new words
+        let color_cycle = self.similarity_colors.iter().cycle();
+        for (word, style) in words.iter().zip(color_cycle) {
+            if word_styles.contains_key(word) {
+                continue;
+            }
+            word_styles.insert(word.clone(), style.clone());
+        }
+
+        let mut res = Vec::new();
+        for line in lines {
+            let mut spans = Vec::new();
+            let mut start = 0;
+            let mut last_end = 0;
+            loop {
+                let slice = &line[start..];
+                if slice.is_empty() {
+                    spans.push(Span::raw(&line[last_end..start]));
+                    break;
+                };
+
+                if start > 0 {
+                    if let Some(c) = line.chars().nth(start - 1) {
+                        if !(c.is_whitespace() || WORD_SEPARATOR.contains(c)) {
+                            // not a start of word
+                            start += 1;
+                            while !line.is_char_boundary(start) {
+                                start += 1;
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                for (word, style) in word_styles.iter() {
+                    if !slice.starts_with(word) {
+                        continue;
+                    }
+                    if let Some(c) = slice.chars().nth(word.chars().count()) {
+                        if !(c.is_whitespace() || WORD_SEPARATOR.contains(c)) {
+                            // not a end of word
+                            continue;
+                        }
+                    }
+
+                    if start != last_end {
+                        spans.push(Span::raw(&line[last_end..start]));
+                    }
+                    spans.push(Span::styled(word.clone(), style.clone()));
+                    start += word.len();
+                    last_end = start;
+                    start -= 1;
+                    break;
+                }
+
+                start += 1;
+                while !line.is_char_boundary(start) {
+                    start += 1;
+                }
+            }
+            res.push(Spans::from(spans))
+        }
+
+        *self.last_colors.borrow_mut() = word_styles;
+        return res;
     }
 
     fn color_line_default<'a>(&self, line: &'a str) -> Spans<'a> {
