@@ -38,7 +38,7 @@ const WORD_SEPARATOR: &str = "<>()[]{},;:='\",";
 enum ColorMode {
     Default,
     Log,
-    Similarity,
+    Entropy,
 }
 
 pub struct Frontend {
@@ -58,7 +58,7 @@ pub struct Frontend {
     cancel_sender: RefCell<UnboundedSender<()>>,
     state_receiver: Receiver<BackendState>,
     log_colors: Vec<(Regex, Style)>,
-    similarity_colors: Vec<Style>,
+    entropy_colors: Vec<Style>,
 }
 
 impl Frontend {
@@ -70,7 +70,7 @@ impl Frontend {
         let crossterm_backend = backend::CrosstermBackend::new(io::stdout());
         let terminal = Terminal::new(crossterm_backend)?;
         let log_colors = Frontend::make_log_colors();
-        let similarity_colors = Frontend::make_similarity_colors();
+        let entropy_colors = Frontend::make_entropy_colors();
         return Ok(Self {
             terminal: Some(terminal),
             command: String::new(),
@@ -88,7 +88,7 @@ impl Frontend {
             cancel_sender: RefCell::from(cancel_sender),
             state_receiver,
             log_colors,
-            similarity_colors,
+            entropy_colors,
         });
     }
 
@@ -121,7 +121,7 @@ impl Frontend {
         ];
     }
 
-    fn make_similarity_colors() -> Vec<Style> {
+    fn make_entropy_colors() -> Vec<Style> {
         return vec![
             Style::default().fg(Color::Red),
             Style::default().fg(Color::Green),
@@ -303,7 +303,7 @@ impl Frontend {
             "h" => self.right_offset = self.right_offset.saturating_sub(1),
             "H" => self.right_offset = self.right_offset.saturating_sub(FAST_SCROLL_LINES as usize),
             "clog" => self.color_mode = ColorMode::Log,
-            "csim" => self.color_mode = ColorMode::Similarity,
+            "cent" => self.color_mode = ColorMode::Entropy,
             "cdef" => self.color_mode = ColorMode::Default,
             x if x.starts_with("m") && x.len() > 1 => {
                 self.send_command(Command::SaveMark(String::from(&x[1..2])))
@@ -474,7 +474,7 @@ impl Frontend {
                 .collect();
         } else {
             match self.color_mode {
-                ColorMode::Similarity => self.color_lines_similarity(lines),
+                ColorMode::Entropy => self.color_lines_entropy(lines),
                 ColorMode::Log => lines
                     .iter()
                     .map(|lines| self.color_line_log(lines))
@@ -494,7 +494,7 @@ impl Frontend {
             spans.push(Span::raw(&line[..m.start()]));
             spans.push(Span::styled(
                 m.as_str(),
-                Style::default().bg(Color::DarkGray),
+                Style::default().bg(Color::Yellow).fg(Color::Black),
             ));
 
             line = &line.get(m.end()..).unwrap_or("");
@@ -516,7 +516,7 @@ impl Frontend {
         return Spans::from(spans);
     }
 
-    fn color_lines_similarity<'a>(&self, lines: Vec<&'a str>) -> Vec<Spans<'a>> {
+    fn color_lines_entropy<'a>(&self, lines: Vec<&'a str>) -> Vec<Spans<'a>> {
         // collect interesting words
         let mut words: HashMap<&str, u64> = HashMap::new();
         for word in lines
@@ -538,7 +538,7 @@ impl Frontend {
         let words: Vec<(String, Style)> = words
             .into_iter()
             .rev()
-            .zip(self.similarity_colors.iter())
+            .zip(self.entropy_colors.iter())
             .map(|(w, s)| (w, s.clone()))
             .collect();
         debug!("words: {:?}", words);
