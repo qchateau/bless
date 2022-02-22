@@ -82,6 +82,7 @@ dependencies = [
  "env_logger",
  "futures",
  "human_bytes",
+ "lazy_static",
  "log",
  "memmap2",
  "num-integer",

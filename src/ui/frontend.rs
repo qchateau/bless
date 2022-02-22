@@ -28,11 +28,11 @@ use crate::{
         backend::{BackendState, Command},
         errors::{ChannelError, FrontendError},
     },
-    utils::text::convert_tabs,
+    utils::{language::word_entropy, text::convert_tabs},
 };
 
 const FAST_SCROLL_LINES: i64 = 5;
-const WORD_SEPARATOR: &str = "`~!@#$%^&*()=+[{]}|;:'\",.<>?";
+const WORD_SEPARATOR: &str = "<>()[]{},;:='\",";
 
 #[derive(PartialEq, Debug)]
 enum ColorMode {
@@ -59,7 +59,6 @@ pub struct Frontend {
     state_receiver: Receiver<BackendState>,
     log_colors: Vec<(Regex, Style)>,
     similarity_colors: Vec<Style>,
-    last_colors: RefCell<HashMap<String, Style>>,
 }
 
 impl Frontend {
@@ -90,7 +89,6 @@ impl Frontend {
             state_receiver,
             log_colors,
             similarity_colors,
-            last_colors: RefCell::from(HashMap::new()),
         });
     }
 
@@ -131,8 +129,6 @@ impl Frontend {
             Style::default().fg(Color::Blue),
             Style::default().fg(Color::Magenta),
             Style::default().fg(Color::Cyan),
-            Style::default().fg(Color::Gray),
-            Style::default().fg(Color::DarkGray),
             Style::default().fg(Color::LightRed),
             Style::default().fg(Color::LightGreen),
             Style::default().fg(Color::LightYellow),
@@ -533,91 +529,60 @@ impl Frontend {
         {
             *words.entry(word).or_default() += 1;
         }
-        let words: Vec<String> = words
+        let mut words: Vec<String> = words
             .into_iter()
-            .filter(|(_, cnt)| *cnt > 1)
             .map(|(word, _)| word.to_string())
+            .collect();
+        words.sort_by(|a, b| word_entropy(a).partial_cmp(&word_entropy(b)).unwrap());
+
+        let words: Vec<(String, Style)> = words
+            .into_iter()
+            .rev()
+            .zip(self.similarity_colors.iter())
+            .map(|(w, s)| (w, s.clone()))
             .collect();
         debug!("words: {:?}", words);
 
-        // copy the previous words and their style
-        let mut word_styles = self.last_colors.borrow().clone();
-
-        // evict words that have disappeared
-        let to_remove: Vec<String> = word_styles
-            .keys()
-            .filter(|&word| !word.contains(word))
-            .map(|x| x.clone())
-            .collect();
-        for word in to_remove {
-            word_styles.remove(&word);
-        }
-
-        // add the new words
-        let color_cycle = self.similarity_colors.iter().cycle();
-        for (word, style) in words.iter().zip(color_cycle) {
-            if word_styles.contains_key(word) {
-                continue;
-            }
-            word_styles.insert(word.clone(), style.clone());
-        }
-
         let mut res = Vec::new();
         for line in lines {
-            let mut spans = Vec::new();
-            let mut start = 0;
-            let mut last_end = 0;
-            loop {
-                let slice = &line[start..];
-                if slice.is_empty() {
-                    spans.push(Span::raw(&line[last_end..start]));
-                    break;
-                };
-
-                if start > 0 {
-                    if let Some(c) = line.chars().nth(start - 1) {
-                        if !(c.is_whitespace() || WORD_SEPARATOR.contains(c)) {
-                            // not a start of word
-                            start += 1;
-                            while !line.is_char_boundary(start) {
-                                start += 1;
-                            }
-                            continue;
-                        }
-                    }
-                }
-
-                for (word, style) in word_styles.iter() {
-                    if !slice.starts_with(word) {
-                        continue;
-                    }
-                    if let Some(c) = slice.chars().nth(word.chars().count()) {
-                        if !(c.is_whitespace() || WORD_SEPARATOR.contains(c)) {
-                            // not a end of word
-                            continue;
-                        }
-                    }
-
-                    if start != last_end {
-                        spans.push(Span::raw(&line[last_end..start]));
-                    }
-                    spans.push(Span::styled(word.clone(), style.clone()));
-                    start += word.len();
-                    last_end = start;
-                    start -= 1;
-                    break;
-                }
-
-                start += 1;
-                while !line.is_char_boundary(start) {
-                    start += 1;
-                }
-            }
-            res.push(Spans::from(spans))
+            res.push(self.color_words(line, &words));
         }
 
-        *self.last_colors.borrow_mut() = word_styles;
         return res;
+    }
+
+    fn color_words<'a>(&self, line: &'a str, words: &Vec<(String, Style)>) -> Spans<'a> {
+        let mut spans = Vec::new();
+        let mut start = 0;
+        let mut last_end = 0;
+        loop {
+            let slice = &line[start..];
+            if slice.is_empty() {
+                spans.push(Span::raw(&line[last_end..start]));
+                break;
+            };
+
+            for (word, style) in words.iter() {
+                if !slice.starts_with(word) {
+                    continue;
+                }
+
+                if start != last_end {
+                    spans.push(Span::raw(&line[last_end..start]));
+                }
+                spans.push(Span::styled(word.clone(), style.clone()));
+                start += word.len();
+                last_end = start;
+                start -= 1;
+                break;
+            }
+
+            start += 1;
+            while !line.is_char_boundary(start) {
+                start += 1;
+            }
+        }
+        Spans::from(spans)
     }
 
     fn color_line_default<'a>(&self, line: &'a str) -> Spans<'a> {
