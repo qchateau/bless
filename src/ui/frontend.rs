@@ -123,18 +123,18 @@ impl Frontend {
 
     fn make_entropy_colors() -> Vec<Style> {
         return vec![
-            Style::default().fg(Color::Red),
-            Style::default().fg(Color::Green),
-            Style::default().fg(Color::Yellow),
-            Style::default().fg(Color::Blue),
-            Style::default().fg(Color::Magenta),
-            Style::default().fg(Color::Cyan),
             Style::default().fg(Color::LightRed),
-            Style::default().fg(Color::LightGreen),
+            Style::default().fg(Color::Red),
             Style::default().fg(Color::LightYellow),
-            Style::default().fg(Color::LightBlue),
-            Style::default().fg(Color::LightMagenta),
+            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::LightGreen),
+            Style::default().fg(Color::Green),
             Style::default().fg(Color::LightCyan),
+            Style::default().fg(Color::Cyan),
+            Style::default().fg(Color::LightBlue),
+            Style::default().fg(Color::Blue),
+            Style::default().fg(Color::LightMagenta),
+            Style::default().fg(Color::Magenta),
         ];
     }
 
