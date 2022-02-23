@@ -20,6 +20,7 @@ use tui::{
     widgets::{Block, Borders, Paragraph},
     Frame, Terminal,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     errors::Result,
@@ -600,13 +601,11 @@ impl Frontend {
             for span in spans.0 {
                 if offset_left == 0 {
                     out_spans.push(span);
-                } else if span.content.len() <= offset_left {
-                    offset_left -= span.content.len()
+                } else if span.content.chars().count() <= offset_left {
+                    offset_left -= span.content.chars().count()
                 } else {
-                    out_spans.push(Span::styled(
-                        (&span.content[offset_left..]).to_string(),
-                        span.style,
-                    ));
+                    let content: String = span.content.chars().skip(offset_left).collect();
+                    out_spans.push(Span::styled(content, span.style));
                     offset_left = 0;
                 }
             }
@@ -625,9 +624,10 @@ impl Frontend {
             for span in spans.0 {
                 let mut content = span.content.as_ref();
                 while !content.is_empty() {
-                    if width_left >= content.len() {
+                    let content_width = UnicodeWidthStr::width(content);
+                    if width_left >= content_width {
                         out_spans.push(Span::styled(content.to_string(), span.style));
-                        width_left -= content.len();
+                        width_left -= content_width;
                         content = "";
                     } else {
                         let (left, right) = content.split_at(width_left);

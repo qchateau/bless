@@ -19,6 +19,7 @@ use std::{
     ops::Range,
     sync::atomic::{AtomicBool, Ordering},
 };
+use unicode_width::UnicodeWidthStr;
 
 const MATCH_WINDOW: usize = 0x1000;
 const SHRINK_THRESHOLD: usize = 1_000_000;
@@ -74,7 +75,7 @@ impl FileView {
 
             for line in view.lines() {
                 if ncols.is_some() {
-                    out_lines += div_ceil(line.chars().count(), ncols.unwrap());
+                    out_lines += div_ceil(UnicodeWidthStr::width(line), ncols.unwrap());
                 } else {
                     out_lines += 1;
                 }
@@ -107,7 +108,7 @@ impl FileView {
 
             let out_lines = self.current_view_utf8().lines().fold(0, |acc, line| {
                 if ncols.is_some() {
-                    acc + div_ceil(line.chars().count(), ncols.unwrap())
+                    acc + div_ceil(UnicodeWidthStr::width(line), ncols.unwrap())
                 } else {
                     acc + 1
                 }

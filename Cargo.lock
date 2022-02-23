@@ -91,6 +91,7 @@ dependencies = [
  "signal-hook-async-std",
  "tokio",
  "tui",
+ "unicode-width",
 ]
 
 [[package]]
