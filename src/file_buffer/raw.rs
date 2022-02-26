@@ -1,4 +1,4 @@
-use super::devec::DeVec;
+use crate::file_buffer::{devec::DeVec, FileBuffer};
 use async_trait::async_trait;
 use memmap2::{Advice, Mmap, MmapOptions};
 use regex::bytes::Regex;
@@ -19,13 +19,13 @@ const FIND_WINDOW: usize = 0x100000;
 const FIND_OVERLAP: usize = 0x1000;
 
 #[derive(Debug)]
-pub struct FileBuffer {
+pub struct RawFileBuffer {
     buffer_offset: u64,
     buffer: DeVec<u8>,
     file: File,
 }
 
-impl FileBuffer {
+impl RawFileBuffer {
     pub async fn new(path: &str) -> io::Result<Self> {
         let file = File::open(path).await?;
         return Ok(Self {
@@ -42,7 +42,7 @@ impl FileBuffer {
 }
 
 #[async_trait]
-impl super::FileBuffer for FileBuffer {
+impl FileBuffer for RawFileBuffer {
     fn data(&self) -> &[u8] {
         return self.buffer.as_slice();
     }

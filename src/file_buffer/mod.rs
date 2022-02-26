@@ -40,5 +40,5 @@ pub async fn make_file_buffer(path: &str) -> Result<Box<dyn FileBuffer>> {
         return Ok(Box::from(bz));
     }
 
-    return Ok(Box::from(raw::FileBuffer::new(path).await?));
+    return Ok(Box::from(raw::RawFileBuffer::new(path).await?));
 }
