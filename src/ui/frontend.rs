@@ -60,6 +60,7 @@ pub struct Frontend {
     state_receiver: Receiver<BackendState>,
     log_colors: Vec<(Regex, Style)>,
     entropy_colors: Vec<Style>,
+    entropy_last_words: RefCell<Vec<(String, Style)>>,
 }
 
 impl Frontend {
@@ -90,6 +91,7 @@ impl Frontend {
             state_receiver,
             log_colors,
             entropy_colors,
+            entropy_last_words: RefCell::from(Vec::new()),
         });
     }
 
@@ -125,16 +127,16 @@ impl Frontend {
     fn make_entropy_colors() -> Vec<Style> {
         return vec![
             Style::default().fg(Color::LightRed),
-            Style::default().fg(Color::Red),
             Style::default().fg(Color::LightYellow),
-            Style::default().fg(Color::Yellow),
             Style::default().fg(Color::LightGreen),
-            Style::default().fg(Color::Green),
             Style::default().fg(Color::LightCyan),
-            Style::default().fg(Color::Cyan),
             Style::default().fg(Color::LightBlue),
-            Style::default().fg(Color::Blue),
             Style::default().fg(Color::LightMagenta),
+            Style::default().fg(Color::Red),
+            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::Green),
+            Style::default().fg(Color::Cyan),
+            Style::default().fg(Color::Blue),
             Style::default().fg(Color::Magenta),
         ];
     }
@@ -519,7 +521,8 @@ impl Frontend {
 
     fn color_lines_entropy<'a>(&self, lines: Vec<&'a str>) -> Vec<Spans<'a>> {
         // collect interesting words
-        let mut words: HashMap<&str, u64> = HashMap::new();
+        let word_regex = Regex::new(".*\\w").unwrap();
+        let mut words_count: HashMap<&str, u64> = HashMap::new();
         for word in lines
             .iter()
             .map(|line| line.split_whitespace())
@@ -527,27 +530,58 @@ impl Frontend {
             .map(|word| word.split(|x| WORD_SEPARATOR.contains(x)))
             .flatten()
             .filter(|word| word.len() >= 4)
+            .map(|word| word_regex.find(word).map(|m| m.as_str()).unwrap_or(""))
         {
-            *words.entry(word).or_default() += 1;
+            *words_count.entry(word).or_default() += 1;
         }
-        let mut words: Vec<String> = words
-            .into_iter()
+        debug!("found {} interesting words", words_count.len());
+
+        let mut words: Vec<String> = words_count
+            .iter()
             .map(|(word, _)| word.to_string())
             .collect();
-        words.sort_by(|a, b| word_entropy(a).partial_cmp(&word_entropy(b)).unwrap());
-
-        let words: Vec<(String, Style)> = words
+        words.sort_by_cached_key(|x| {
+            (1000000.0 * word_entropy(x)) as u64 * words_count.get(x.as_str()).unwrap_or(&0)
+        });
+        words = words
             .into_iter()
             .rev()
-            .zip(self.entropy_colors.iter())
-            .map(|(w, s)| (w, s.clone()))
+            .take(self.entropy_colors.len())
             .collect();
-        debug!("words: {:?}", words);
+        debug!("most interesting words: {:?}", words);
+
+        let reused_words_styles: Vec<(String, Style)> = self
+            .entropy_last_words
+            .borrow()
+            .iter()
+            .filter(|(w, _)| words.contains(w))
+            .cloned()
+            .collect();
+        let reused_styles: Vec<&Style> = reused_words_styles.iter().map(|(_, s)| s).collect();
+        let reused_words: Vec<&String> = reused_words_styles.iter().map(|(w, _)| w).collect();
+
+        let new_styles: Vec<Style> = self
+            .entropy_colors
+            .iter()
+            .filter(|x| !reused_styles.contains(x))
+            .cloned()
+            .collect();
+        let new_words: Vec<String> = words
+            .iter()
+            .filter(|x| !reused_words.contains(x))
+            .cloned()
+            .collect();
+
+        let words: Vec<(String, Style)> = reused_words_styles
+            .into_iter()
+            .chain(new_words.into_iter().zip(new_styles.into_iter()))
+            .collect();
 
         let mut res = Vec::new();
         for line in lines {
             res.push(self.color_words(line, &words));
         }
+        *self.entropy_last_words.borrow_mut() = words;
 
         return res;
     }
