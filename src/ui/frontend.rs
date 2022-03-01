@@ -34,6 +34,43 @@ use crate::{
 
 const FAST_SCROLL_LINES: i64 = 5;
 const WORD_SEPARATOR: &str = "<>()[]{},;:='\",";
+const HELP: &str = r#"
+  MOVING
+
+j, J, PageDown | Move down
+k, K, PageUp   | Move up
+l, L           | Move right
+h, H           | Move left
+<nr>gg         | Jump to line <nr>
+<nr>pp         | Jump to <nr>th percent of the file
+m<letter>      | Place marker <letter>
+'<leter>       | Jump to marker <letter>
+
+
+  SEARCHING
+
+/pattern       | Jump to the first line matching "pattern"
+n              | Jump to next match
+N              | Jump to previous match
+
+
+  DISPLAY / BEHAVIOR
+
+w              | Toggle line wrap
+f              | Follow updates
+<nr>tw         | Set tab width to <nr>
+cdef           | Default color mode
+clog           | Color log mode
+cent           | Color word entropy mode
+
+
+  OTHER
+
+Ctrl-C         | Cancel search, clear command, exit
+Esc            | Cancel search, clear command
+q              | Exit
+?              | Show/hide this help
+"#;
 
 #[derive(PartialEq, Debug)]
 enum ColorMode {
@@ -53,6 +90,7 @@ pub struct Frontend {
     right_offset: usize,
     tab_width: usize,
     color_mode: ColorMode,
+    show_help: bool,
     last_sent_resize: Command,
     last_sent_command: RefCell<Command>,
     command_sender: RefCell<UnboundedSender<Command>>,
@@ -82,6 +120,7 @@ impl Frontend {
             right_offset: 0,
             tab_width: 4,
             color_mode: ColorMode::Default,
+            show_help: false,
             search: None,
             wrap: true,
             stop: false,
@@ -200,12 +239,14 @@ impl Frontend {
                 modifiers: KeyModifiers::CONTROL,
                 code: KeyCode::Char('c'),
             } => {
-                if self.command.is_empty() && self.search.is_none() {
-                    self.stop = true;
-                } else {
+                if self.show_help {
+                    self.show_help = false;
+                } else if !self.command.is_empty() || self.search.is_some() {
                     self.command.clear();
                     self.search = None;
                     self.send_cancel();
+                } else {
+                    self.stop = true;
                 }
             }
             KeyEvent {
@@ -254,9 +295,13 @@ impl Frontend {
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
-                self.command.clear();
-                self.search = None;
-                self.send_cancel();
+                if self.show_help {
+                    self.show_help = false;
+                } else {
+                    self.command.clear();
+                    self.search = None;
+                    self.send_cancel();
+                }
             }
             KeyEvent {
                 code: KeyCode::Enter,
@@ -272,6 +317,7 @@ impl Frontend {
         };
 
         match self.command.as_str() {
+            "?" => self.show_help = !self.show_help,
             "q" => self.stop = true,
             "w" => {
                 self.wrap = !self.wrap;
@@ -370,7 +416,9 @@ impl Frontend {
             self.tab_width,
         );
 
-        let text = {
+        let text = if self.show_help {
+            Text::from(HELP)
+        } else {
             let lines: Vec<&str> = backend_text.iter().map(|x| x.as_ref()).collect();
             let mut lines = self.color_lines(lines);
 
