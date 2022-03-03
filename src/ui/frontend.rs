@@ -17,10 +17,9 @@ use tui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Span, Spans, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::{
     errors::Result,
@@ -422,16 +421,8 @@ impl Frontend {
             let lines: Vec<&str> = backend_text.iter().map(|x| x.as_ref()).collect();
             let mut lines = self.color_lines(lines);
 
-            // for line in backend_text.iter().map(|x| x.as_ref()) {
-            //     lines.push(self.color_line(line));
-            // }
-
             if self.right_offset > 0 {
                 lines = self.shift_lines(lines, self.right_offset);
-            }
-
-            if self.wrap {
-                lines = self.wrap_lines(lines, text_width);
             }
 
             Text::from(lines)
@@ -484,10 +475,13 @@ impl Frontend {
             .alignment(Alignment::Left);
         f.render_widget(paragraph, chunks[0]);
 
-        let paragraph = Paragraph::new(text)
+        let mut paragraph = Paragraph::new(text)
             .style(Style::default())
             .block(Block::default())
             .alignment(Alignment::Left);
+        if self.wrap {
+            paragraph = paragraph.wrap(Wrap { trim: false });
+        }
         f.render_widget(paragraph, chunks[1]);
     }
 
@@ -694,38 +688,6 @@ impl Frontend {
 
             out_lines.push(Spans::from(out_spans));
         }
-        return out_lines;
-    }
-
-    fn wrap_lines<'a>(&self, lines: Vec<Spans<'a>>, width: usize) -> Vec<Spans<'a>> {
-        let mut out_lines = Vec::new();
-        let mut out_spans = Vec::new();
-
-        for spans in lines {
-            let mut width_left = width;
-            for span in spans.0 {
-                let mut content = span.content.as_ref();
-                while !content.is_empty() {
-                    let content_width = UnicodeWidthStr::width(content);
-                    if width_left >= content_width {
-                        out_spans.push(Span::styled(content.to_string(), span.style));
-                        width_left -= content_width;
-                        content = "";
-                    } else {
-                        let (left, right) = content.split_at(width_left);
-                        out_spans.push(Span::styled(left.to_string(), span.style));
-                        content = right;
-
-                        out_lines.push(Spans::from(out_spans));
-                        out_spans = Vec::new();
-                        width_left = width;
-                    }
-                }
-            }
-            out_lines.push(Spans::from(out_spans));
-            out_spans = Vec::new();
-        }
-
         return out_lines;
     }
 
