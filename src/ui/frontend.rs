@@ -353,45 +353,63 @@ impl Frontend {
             "clog" => self.color_mode = ColorMode::Log,
             "cent" => self.color_mode = ColorMode::Entropy,
             "cdef" => self.color_mode = ColorMode::Default,
-            x if x.starts_with("m") && x.len() > 1 => {
-                self.send_command(Command::SaveMark(String::from(&x[1..2])))
-            }
-            x if x.starts_with("'") && x.len() > 1 => {
-                self.send_command(Command::LoadMark(String::from(&x[1..2])))
-            }
-            x if x.to_lowercase().ends_with("gg") => {
-                if let Ok(line) = x.get(..x.len() - 2).unwrap().parse::<i64>() {
-                    self.send_command(Command::JumpLine(line))
-                } else {
-                    self.push_error("not a number".to_owned());
+            x => match x.get(..1).unwrap_or("") {
+                "/" => {
+                    if x.ends_with("\n") {
+                        let pattern = x.get(1..x.len() - 1).unwrap_or("");
+                        if pattern.is_empty() {
+                            self.search = None;
+                        } else if let Ok(re) =
+                            Regex::new(pattern).map_err(|_| ViewError::InvalidRegex)
+                        {
+                            self.search = Some(re);
+                            self.send_command(Command::SearchDown(pattern.to_string()));
+                        } else {
+                            self.push_error("invalid regex".to_owned());
+                        }
+                    } else {
+                        command_done = false;
+                    }
                 }
-            }
-            x if x.to_lowercase().ends_with("pp") => {
-                if let Ok(jump_pos_percent) = x.get(..x.len() - 2).unwrap().parse::<f64>() {
-                    self.send_command(Command::JumpFileRatio(jump_pos_percent / 100.0))
-                } else {
-                    self.push_error("not a number".to_owned());
+                "m" => {
+                    if x.len() > 1 {
+                        self.send_command(Command::SaveMark(String::from(&x[1..2])))
+                    } else {
+                        command_done = false;
+                    }
                 }
-            }
-            x if x.starts_with("/") && x.ends_with("\n") => {
-                let pattern = x.get(1..x.len() - 1).unwrap_or("");
-                if pattern.is_empty() {
-                    self.search = None;
-                } else if let Ok(re) = Regex::new(pattern).map_err(|_| ViewError::InvalidRegex) {
-                    self.search = Some(re);
-                    self.send_command(Command::SearchDown(pattern.to_string()));
-                } else {
-                    self.push_error("invalid regex".to_owned());
+                "'" => {
+                    if x.len() > 1 {
+                        self.send_command(Command::LoadMark(String::from(&x[1..2])))
+                    } else {
+                        command_done = false;
+                    }
                 }
-            }
-            x if x.ends_with("tw") => {
-                if let Ok(width) = x.get(..x.len() - 2).unwrap().parse::<usize>() {
-                    self.tab_width = width
-                } else {
-                    self.push_error("not a number".to_owned());
-                }
-            }
-            _ => command_done = self.command.ends_with("\n"),
+                _ => match x {
+                    x if x.to_lowercase().ends_with("gg") => {
+                        if let Ok(line) = x.get(..x.len() - 2).unwrap().parse::<i64>() {
+                            self.send_command(Command::JumpLine(line))
+                        } else {
+                            self.push_error("not a number".to_owned());
+                        }
+                    }
+                    x if x.to_lowercase().ends_with("pp") => {
+                        if let Ok(jump_pos_percent) = x.get(..x.len() - 2).unwrap().parse::<f64>() {
+                            self.send_command(Command::JumpFileRatio(jump_pos_percent / 100.0))
+                        } else {
+                            self.push_error("not a number".to_owned());
+                        }
+                    }
+                    x if x.ends_with("tw") => {
+                        if let Ok(width) = x.get(..x.len() - 2).unwrap().parse::<usize>() {
+                            self.tab_width = width
+                        } else {
+                            self.push_error("not a number".to_owned());
+                        }
+                    }
+                    _ => command_done = self.command.ends_with("\n"),
+                },
+            },
         };
 
         if command_done {

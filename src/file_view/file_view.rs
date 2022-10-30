@@ -8,21 +8,11 @@ use crate::{
         text::decode_utf8,
     },
 };
-use human_bytes::human_bytes;
 use log::{debug, info};
 use num_integer::div_ceil;
 use regex::bytes;
-use std::{
-    borrow::Cow,
-    fs::canonicalize,
-    io::ErrorKind,
-    ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{borrow::Cow, fs::canonicalize, io::ErrorKind, sync::atomic::AtomicBool};
 use unicode_width::UnicodeWidthStr;
-
-const MATCH_WINDOW: usize = 0x1000;
-const SHRINK_THRESHOLD: usize = 1_000_000;
 
 #[derive(Debug)]
 pub struct ViewState {
@@ -130,42 +120,45 @@ impl FileView {
         let mut breaker = InfiniteLoopBreaker::new(10);
 
         debug!("up {}", lines);
-        while lines > 0 {
+        loop {
             breaker.it()?;
 
             let view = self.above_view();
-            let view = &view[..view.len().saturating_sub(1)]; // skip backline
 
-            match rfind_nth_or_last(view, b'\n', lines.saturating_sub(1) as usize) {
+            match rfind_nth_or_last(view, b'\n', lines as usize) {
                 Some((nth, pos)) => {
                     self.view_offset = pos + 1;
-                    self.current_line = self.current_line.map(|x| x - 1 - nth as i64);
-                    lines -= 1 + nth as u64;
+                    self.current_line = self.current_line.map(|x| x - nth as i64);
+                    lines -= nth as u64;
                     debug!(
                         "found newline: {}, off: {}, line: {:?}",
                         pos, self.view_offset, self.current_line
                     );
-                    breaker.reset();
+
+                    if lines <= 0 {
+                        return Ok(());
+                    }
                 }
-                None => match self.load_prev().await {
-                    Ok(0) => {
-                        let was_at_top = self.view_offset == 0;
-                        self.view_offset = 0;
-                        self.current_line = Some(1);
-                        if was_at_top {
-                            return Err(ViewError::BOF.into());
-                        } else {
-                            lines -= 1;
-                        }
+                None => (),
+            }
+
+            match self.load_prev().await {
+                Ok(0) => {
+                    let was_at_top = self.view_offset == 0;
+                    self.view_offset = 0;
+                    self.current_line = Some(1);
+                    if was_at_top {
+                        return Err(ViewError::BOF.into());
+                    } else {
+                        return Ok(());
                     }
-                    Ok(_) => (),
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                },
+                }
+                Ok(_) => (),
+                Err(e) => {
+                    return Err(e.into());
+                }
             }
         }
-        return Ok(());
     }
     pub async fn up_to_line_matching(
         &mut self,
@@ -176,12 +169,18 @@ impl FileView {
 
         let state = self.save_state();
 
-        match self.buffer.rfind(&regex, cancelled).await {
+        match self
+            .buffer
+            .rseek_from(&regex, self.view_offset as u64, cancelled)
+            .await
+        {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
                     debug!("match found");
-                    return self.jump_to_byte(m.start).await;
+                    self.view_offset = m.start as usize;
+                    self.current_line = None;
+                    return self.up(0).await;
                 } else {
                     self.load_state(&state)?;
                     debug!("no match found");
@@ -192,46 +191,12 @@ impl FileView {
                 debug!("search cancelled");
                 return Err(ViewError::Cancelled.into());
             }
-            // the buffer doesn't implement find, do it ourself
-            Err(e) if e.kind() == ErrorKind::Unsupported => {
-                info!("no fast implementation, using default impl");
-            }
             // the buffer does implement find, but encountered and error
             Err(e) => {
                 debug!("search error: {}", e);
                 return Err(e.into());
             }
         }
-
-        let err = loop {
-            let above_view = self.above_view();
-            let m = regex.find_iter(above_view).last();
-            if let Some(m) = m {
-                // align view_offset to a line start, use self.up
-                // add 1 to the view offset in case the match is start of line already
-                self.view_offset = m.start() + 1;
-                self.up(1).await.ok();
-                self.current_line = None;
-                debug!("match found");
-                return Ok(());
-            }
-
-            self.view_offset = MATCH_WINDOW;
-
-            match self.load_prev().await {
-                Ok(0) => break ViewError::NoMatchFound.into(),
-                Err(e) => break e.into(),
-                Ok(_) => (),
-            }
-
-            if cancelled.load(Ordering::Acquire) {
-                break ViewError::Cancelled.into();
-            }
-        };
-
-        self.load_state(&state)?;
-        debug!("no match found: {}", err);
-        return Err(err);
     }
     pub async fn down(&mut self, mut lines: u64) -> Result<()> {
         let mut breaker = InfiniteLoopBreaker::new(10);
@@ -268,12 +233,18 @@ impl FileView {
             self.down(1).await.ok();
         }
 
-        match self.buffer.find(&regex, cancelled).await {
+        match self
+            .buffer
+            .seek_from(&regex, self.view_offset as u64, cancelled)
+            .await
+        {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
                     debug!("match found");
-                    return self.jump_to_byte(m.start).await;
+                    self.view_offset = m.start as usize;
+                    self.current_line = None;
+                    return self.up(0).await;
                 } else {
                     self.load_state(&state)?;
                     debug!("no match found");
@@ -284,46 +255,12 @@ impl FileView {
                 debug!("search cancelled");
                 return Err(ViewError::Cancelled.into());
             }
-            // the buffer doesn't implement find, do it ourself
-            Err(e) if e.kind() == ErrorKind::Unsupported => {
-                info!("no fast implementation, using default impl");
-            }
             // the buffer does implement find, but encountered and error
             Err(e) => {
                 debug!("search error: {}", e);
                 return Err(e.into());
             }
         }
-
-        let err = loop {
-            let view = self.current_view();
-            let m = regex.find(view);
-            if let Some(m) = m {
-                // align view_offset to a line start, use self.up
-                // add 1 to the view offset in case the match is start of line already
-                self.view_offset += m.start() + 1;
-                self.up(1).await.ok();
-                self.current_line = None;
-                debug!("match found");
-                return Ok(());
-            }
-
-            self.view_offset += self.current_view().len().saturating_sub(MATCH_WINDOW);
-
-            match self.load_next().await {
-                Ok(0) => break ViewError::NoMatchFound.into(),
-                Err(e) => break e.into(),
-                Ok(_) => (),
-            }
-
-            if cancelled.load(Ordering::Acquire) {
-                break ViewError::Cancelled.into();
-            }
-        };
-
-        debug!("no match found: {}", err);
-        self.load_state(&state)?;
-        return Err(err);
     }
     pub async fn jump_to_line(&mut self, line: i64) -> Result<()> {
         info!("jump to line {}", line);
@@ -365,7 +302,7 @@ impl FileView {
             Ok(())
         } else {
             self.current_line = None;
-            self.up(1).await
+            self.up(0).await
         }
     }
     pub async fn top(&mut self) -> Result<()> {
@@ -407,40 +344,14 @@ impl FileView {
     fn above_view(&self) -> &[u8] {
         return self.buffer.data().get(..self.view_offset).unwrap_or(b"");
     }
-    fn maybe_shrink(&mut self, range: Range<u64>) {
-        let size_before = self.buffer.data().len();
-        if size_before < SHRINK_THRESHOLD {
-            return;
-        }
-        let shrinked = self.buffer.shrink_to(range.clone());
-        self.view_offset = (range.start - shrinked.start) as usize;
-        debug!(
-            "shrinked: {}, size: {}, new offset: {}",
-            human_bytes((size_before - self.buffer.data().len()) as f64),
-            human_bytes(self.buffer.data().len() as f64),
-            self.view_offset
-        );
-    }
-    fn maybe_shrink_left(&mut self) {
-        let start = self.view_offset as u64;
-        let end = self.buffer.data().len() as u64;
-        self.maybe_shrink(Range { start, end });
-    }
-    fn maybe_shrink_right(&mut self) {
-        let start = 0;
-        let end = self.view_offset as u64;
-        self.maybe_shrink(Range { start, end });
-    }
     async fn load_next(&mut self) -> Result<usize> {
         let load_size = self.buffer.load_next().await?;
-        self.maybe_shrink_left();
         debug!("loaded {} next bytes", load_size);
         return Ok(load_size);
     }
     async fn load_prev(&mut self) -> Result<usize> {
         let load_size = self.buffer.load_prev().await?;
         self.view_offset += load_size;
-        self.maybe_shrink_right();
         debug!("loaded {} previous bytes", load_size);
         return Ok(load_size);
     }

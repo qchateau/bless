@@ -8,11 +8,12 @@ use log::{debug, info};
 use memmap2::{Advice, Mmap, MmapOptions};
 use regex::bytes::Regex;
 use std::{
+    cmp::min,
     collections::VecDeque,
     fmt,
     io::{self, ErrorKind},
     ops::Range,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
     vec::Vec,
 };
 use tokio::{fs::File, io::AsyncReadExt, task::yield_now};
@@ -21,6 +22,8 @@ const ALLOC_SIZE: usize = 0x100000;
 const MAGIC_RFIND_WINDOW: usize = 0x10000;
 const MAGIC_RFIND_OVERLAP: usize = 8;
 const MAX_INVALID_BLOCKS: u64 = 10;
+const FIND_WINDOW: usize = 0x100000;
+const FIND_OVERLAP: usize = 0x1000;
 
 struct Block {
     file_range: Range<usize>,
@@ -160,7 +163,7 @@ impl FileBuffer for Bz2FileBuffer {
         let mut end = byte as usize;
 
         let block = loop {
-            end = self.find_block_from(end + 1)?;
+            end = self.find_block_from(end)?;
             start = self.rfind_block_from(start)?;
 
             let block_range = Range { start, end };
@@ -191,10 +194,10 @@ impl FileBuffer for Bz2FileBuffer {
         let size_before = self.data().len();
 
         let start = self.range().end as usize;
-        let mut end = start;
+        let mut end = start + 1;
 
         let block = loop {
-            end = self.find_block_from(end + 1)?;
+            end = self.find_block_from(end)?;
             if end <= start {
                 return Ok(0);
             }
@@ -203,6 +206,7 @@ impl FileBuffer for Bz2FileBuffer {
             match self.decode_block(block_range) {
                 Ok(block) => break block,
                 Err(err) => {
+                    info!("error decoding block: {}", err);
                     if let Err(_) = breaker.it() {
                         return Err(err);
                     }
@@ -247,51 +251,73 @@ impl FileBuffer for Bz2FileBuffer {
         self.blocks.push_front(block);
         return Ok(self.data().len() - size_before);
     }
-    async fn find(
+    async fn seek_from(
         &mut self,
-        _re: &Regex,
-        _cancelled: &AtomicBool,
+        re: &Regex,
+        offset: u64,
+        cancelled: &AtomicBool,
     ) -> io::Result<Option<Range<u64>>> {
-        return Err(io::Error::from(ErrorKind::Unsupported));
+        let mut begin = min(offset as usize, self.decoded.len());
+        let mut end = min(begin + FIND_WINDOW, self.decoded.len());
+        loop {
+            if let Some(m) = re.find(&self.decoded[begin..end]) {
+                return Ok(Some(Range {
+                    start: (begin + m.range().start) as u64,
+                    end: (begin + m.range().end) as u64,
+                }));
+            }
+
+            if cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::from(ErrorKind::Interrupted));
+            }
+
+            if end == self.decoded.len() {
+                match self.load_next().await {
+                    Ok(0) => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                    Ok(_) => (),
+                }
+            }
+
+            begin = end - FIND_OVERLAP;
+            end = min(begin + FIND_WINDOW, self.decoded.len());
+            yield_now().await;
+        }
     }
-    async fn rfind(
+    async fn rseek_from(
         &mut self,
-        _re: &Regex,
-        _cancelled: &AtomicBool,
+        re: &Regex,
+        offset: u64,
+        cancelled: &AtomicBool,
     ) -> io::Result<Option<Range<u64>>> {
-        return Err(io::Error::from(ErrorKind::Unsupported));
-    }
-    fn shrink_to(&mut self, range: Range<u64>) -> Range<u64> {
-        assert!(range.start <= range.end && range.end <= self.data().len() as u64);
+        let mut end = min(offset as usize, self.decoded.len());
+        let mut begin = end.saturating_sub(FIND_WINDOW);
 
-        let mut len_front = 0;
-        while !self.blocks.is_empty() {
-            let block_len = self.blocks.front().unwrap().data.len();
-            len_front += block_len;
-            if len_front > range.start as usize {
-                len_front -= block_len;
-                break;
+        loop {
+            if let Some(m) = re.find_iter(&self.decoded[begin..end]).last() {
+                return Ok(Some(Range {
+                    start: (begin + m.range().start) as u64,
+                    end: (begin + m.range().end) as u64,
+                }));
             }
-            self.blocks.pop_front();
-        }
 
-        let mut len_range = 0;
-        let mut idx = self.blocks.len();
-        for (i, block) in self.blocks.iter().enumerate() {
-            if len_range >= range.end as usize {
-                idx = i;
-                break;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(io::Error::from(ErrorKind::Interrupted));
             }
-            len_range += block.data.len();
-        }
-        self.blocks.truncate(idx);
 
-        self.decoded = (&self.decoded[len_front..(len_front + len_range)]).to_vec();
-        let shrinked_range = Range {
-            start: len_front as u64,
-            end: (len_front + len_range) as u64,
-        };
-        info!("shrinked to {:?} (requested {:?})", shrinked_range, range);
-        return shrinked_range;
+            if begin == 0 {
+                match self.load_prev().await {
+                    Ok(0) => return Ok(None),
+                    Err(e) => return Err(e.into()),
+                    Ok(size) => {
+                        begin += size;
+                    }
+                }
+            }
+
+            end = begin + FIND_OVERLAP;
+            begin = end.saturating_sub(FIND_WINDOW);
+            yield_now().await;
+        }
     }
 }

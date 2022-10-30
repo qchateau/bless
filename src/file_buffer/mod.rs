@@ -1,5 +1,4 @@
 pub mod bzip2;
-mod devec;
 pub mod raw;
 
 use crate::errors::Result;
@@ -24,14 +23,19 @@ pub trait FileBuffer: Debug {
     // load more data at the back
     async fn load_next(&mut self) -> io::Result<usize>;
     // find a pattern forward
-    async fn find(&mut self, re: &Regex, cancelled: &AtomicBool) -> io::Result<Option<Range<u64>>>;
+    async fn seek_from(
+        &mut self,
+        re: &Regex,
+        offset: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Range<u64>>>;
     // find a pattern backwards
-    async fn rfind(&mut self, re: &Regex, cancelled: &AtomicBool)
-        -> io::Result<Option<Range<u64>>>;
-    // shring the buffer around a range of data
-    // so that data[range] is accessible
-    // returns the actual ranged that the buffer shrinked to
-    fn shrink_to(&mut self, range: Range<u64>) -> Range<u64>;
+    async fn rseek_from(
+        &mut self,
+        re: &Regex,
+        offset: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Range<u64>>>;
 }
 
 pub async fn make_file_buffer(path: &str) -> Result<Box<dyn FileBuffer>> {
