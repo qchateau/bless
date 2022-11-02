@@ -8,10 +8,10 @@ use crate::{
         text::decode_utf8,
     },
 };
-use log::{debug, info};
+use log::{debug, info, warn};
 use num_integer::div_ceil;
 use regex::bytes;
-use std::{borrow::Cow, fs::canonicalize, io::ErrorKind, sync::atomic::AtomicBool};
+use std::{borrow::Cow, fs::canonicalize, io::ErrorKind, sync::atomic::AtomicBool, time::Instant};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug)]
@@ -169,6 +169,7 @@ impl FileView {
 
         let state = self.save_state();
 
+        let start = Instant::now();
         match self
             .buffer
             .rseek_from(&regex, self.view_offset as u64, cancelled)
@@ -177,23 +178,23 @@ impl FileView {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
-                    debug!("match found");
+                    info!("match found in {:?} ", start.elapsed());
                     self.view_offset = m.start as usize;
                     self.current_line = None;
                     return self.up(0).await;
                 } else {
                     self.load_state(&state)?;
-                    debug!("no match found");
+                    info!("no match found in {:?} ", start.elapsed());
                     return Err(ViewError::NoMatchFound.into());
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
-                debug!("search cancelled");
+                info!("search cancelled");
                 return Err(ViewError::Cancelled.into());
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
-                debug!("search error: {}", e);
+                warn!("search error: {}", e);
                 return Err(e.into());
             }
         }
@@ -233,6 +234,7 @@ impl FileView {
             self.down(1).await.ok();
         }
 
+        let start = Instant::now();
         match self
             .buffer
             .seek_from(&regex, self.view_offset as u64, cancelled)
@@ -241,23 +243,23 @@ impl FileView {
             // fast path: the buffer implements find
             Ok(maybe_match) => {
                 if let Some(m) = maybe_match {
-                    debug!("match found");
+                    info!("match found in {:?}", start.elapsed());
                     self.view_offset = m.start as usize;
                     self.current_line = None;
                     return self.up(0).await;
                 } else {
                     self.load_state(&state)?;
-                    debug!("no match found");
+                    info!("no match found in {:?} ", start.elapsed());
                     return Err(ViewError::NoMatchFound.into());
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => {
-                debug!("search cancelled");
+                info!("search cancelled");
                 return Err(ViewError::Cancelled.into());
             }
             // the buffer does implement find, but encountered and error
             Err(e) => {
-                debug!("search error: {}", e);
+                warn!("search error: {}", e);
                 return Err(e.into());
             }
         }

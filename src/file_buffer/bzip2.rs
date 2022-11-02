@@ -65,9 +65,9 @@ impl Bz2FileBuffer {
     pub fn is_valid(&self) -> bool {
         return Regex::new("BZ[h0][1-9]").unwrap().is_match(&self.header);
     }
-    fn mmap(&self, advice: Advice) -> io::Result<Mmap> {
+    fn mmap(&self) -> io::Result<Mmap> {
         let mmap = unsafe { MmapOptions::new().map(&self.file) }?;
-        mmap.advise(advice)?;
+        mmap.advise(Advice::Sequential)?;
         return Ok(mmap);
     }
     fn rebuild_data(&mut self) {
@@ -82,7 +82,7 @@ impl Bz2FileBuffer {
             data: Vec::new(),
         };
         let mut decoder = Decompress::new(false);
-        let mmap = self.mmap(Advice::Sequential)?;
+        let mmap = self.mmap()?;
 
         let mut in_data = &mmap[block.file_range.clone()];
         decoder.decompress(self.header.as_slice(), &mut block.data)?;
@@ -106,7 +106,7 @@ impl Bz2FileBuffer {
     }
     fn find_block_from(&self, byte: usize) -> io::Result<usize> {
         debug!("searching next block from {}", byte);
-        let mmap = self.mmap(Advice::Sequential)?;
+        let mmap = self.mmap()?;
         if let Some(m) = self.magic_re.find(&mmap[byte..]) {
             debug!("found at {}", byte + m.range().start);
             return Ok(byte + m.range().start);
@@ -117,7 +117,7 @@ impl Bz2FileBuffer {
     }
     fn rfind_block_from(&self, byte: usize) -> io::Result<usize> {
         debug!("searching previous block from {}", byte);
-        let mmap = self.mmap(Advice::Sequential)?;
+        let mmap = self.mmap()?;
         let mut end = byte;
         let mut start = end.saturating_sub(MAGIC_RFIND_WINDOW);
         loop {

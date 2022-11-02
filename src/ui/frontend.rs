@@ -328,6 +328,7 @@ impl Frontend {
             }
             "n" => {
                 if let Some(re) = self.search.as_ref() {
+                    self.follow = false;
                     self.send_command(Command::SearchDownNext(re.as_str().to_owned()));
                 } else {
                     self.push_error("nothing to search".to_owned());
@@ -335,17 +336,36 @@ impl Frontend {
             }
             "N" => {
                 if let Some(re) = self.search.as_ref() {
+                    self.follow = false;
                     self.send_command(Command::SearchUp(re.as_str().to_owned()));
                 } else {
                     self.push_error("nothing to search".to_owned());
                 }
             }
-            "gg" => self.send_command(Command::JumpLine(1)),
-            "GG" => self.send_command(Command::JumpLine(-1)),
-            "j" => self.send_command(Command::MoveLine(1)),
-            "J" => self.send_command(Command::MoveLine(FAST_SCROLL_LINES)),
-            "k" => self.send_command(Command::MoveLine(-1)),
-            "K" => self.send_command(Command::MoveLine(-FAST_SCROLL_LINES)),
+            "gg" => {
+                self.follow = false;
+                self.send_command(Command::JumpLine(1))
+            }
+            "GG" => {
+                self.follow = false;
+                self.send_command(Command::JumpLine(-1))
+            }
+            "j" => {
+                self.follow = false;
+                self.send_command(Command::MoveLine(1))
+            }
+            "J" => {
+                self.follow = false;
+                self.send_command(Command::MoveLine(FAST_SCROLL_LINES))
+            }
+            "k" => {
+                self.follow = false;
+                self.send_command(Command::MoveLine(-1))
+            }
+            "K" => {
+                self.follow = false;
+                self.send_command(Command::MoveLine(-FAST_SCROLL_LINES))
+            }
             "l" => self.right_offset += 1,
             "L" => self.right_offset += FAST_SCROLL_LINES as usize,
             "h" => self.right_offset = self.right_offset.saturating_sub(1),
@@ -380,6 +400,7 @@ impl Frontend {
                 }
                 "'" => {
                     if x.len() > 1 {
+                        self.follow = false;
                         self.send_command(Command::LoadMark(String::from(&x[1..2])))
                     } else {
                         command_done = false;
@@ -438,6 +459,12 @@ impl Frontend {
         } else {
             let lines: Vec<&str> = backend_text.iter().map(|x| x.as_ref()).collect();
             let mut lines = self.color_lines(lines);
+            if lines.len() < text_height {
+                lines.push(Spans::from(Span::styled(
+                    "<EOF>",
+                    Style::default().fg(Color::Red).bg(Color::DarkGray),
+                )));
+            }
 
             if self.right_offset > 0 {
                 lines = self.shift_lines(lines, self.right_offset);

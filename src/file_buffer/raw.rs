@@ -1,6 +1,6 @@
 use crate::file_buffer::FileBuffer;
 use async_trait::async_trait;
-use memmap2::{Mmap, MmapOptions};
+use memmap2::{Advice, Mmap, MmapOptions};
 use regex::bytes::Regex;
 use std::{
     cmp::min,
@@ -17,19 +17,36 @@ const FIND_OVERLAP: u64 = 0x1000;
 #[derive(Debug)]
 pub struct RawFileBuffer {
     range: Range<u64>,
+    path: String,
     file: File,
     mmap: Mmap,
 }
 
 impl RawFileBuffer {
     pub async fn new(path: &str) -> io::Result<Self> {
-        let file = File::open(path).await?;
+        let path = path.to_owned();
+        let file = File::open(&path).await?;
         let mmap = unsafe { MmapOptions::new().map(&file) }?;
+        mmap.advise(Advice::Sequential)?;
         return Ok(Self {
             range: Range { start: 0, end: 0 },
+            path,
             file,
             mmap,
         });
+    }
+
+    fn remmap(&mut self) -> io::Result<()> {
+        self.mmap = unsafe { MmapOptions::new().map(&self.file) }?;
+        self.mmap.advise(Advice::Sequential)?;
+        return Ok(());
+    }
+
+    async fn maybe_remmap(&mut self) -> io::Result<()> {
+        if self.total_size().await != self.mmap.len() as u64 {
+            self.remmap()?;
+        }
+        return Ok(());
     }
 }
 
@@ -59,7 +76,11 @@ impl FileBuffer for RawFileBuffer {
     }
     async fn load_next(&mut self) -> std::io::Result<usize> {
         let end_before = self.range.end;
-        self.range.end = min(self.range.end + BUFFER_SIZE, self.mmap.len() as u64);
+        self.range.end += BUFFER_SIZE;
+        if self.range.end > self.mmap.len() as u64 {
+            self.maybe_remmap().await?;
+        }
+        self.range.end = min(self.range.end, self.mmap.len() as u64);
         return Ok((self.range.end - end_before) as usize);
     }
     async fn seek_from(
