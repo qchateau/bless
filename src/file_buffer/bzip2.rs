@@ -133,6 +133,59 @@ impl Bz2FileBuffer {
         }
         return Ok(self.header.len());
     }
+    fn shrink_from_front(&mut self, min_size: usize) -> usize {
+        debug!(
+            "shrink from front, min_size: {}, initial size: {}",
+            human_bytes(min_size as f64),
+            human_bytes(self.decoded.len() as f64)
+        );
+        let mut extra_space = self.decoded.len().saturating_sub(min_size);
+        let mut dropped = 0;
+        while let Some(block) = self.blocks.front() {
+            if extra_space >= block.data.len() {
+                extra_space -= block.data.len();
+                dropped += block.data.len();
+                debug!("dropping block of {}", human_bytes(block.data.len() as f64));
+                self.blocks.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.decoded.rotate_left(dropped);
+        self.decoded.truncate(self.decoded.len() - dropped);
+        info!(
+            "shrink from front {} to {}",
+            human_bytes(dropped as f64),
+            human_bytes(self.decoded.len() as f64)
+        );
+        return dropped;
+    }
+    fn shrink_from_back(&mut self, min_size: usize) -> usize {
+        debug!(
+            "shrink from back, min_size: {}, initial size: {}",
+            human_bytes(min_size as f64),
+            human_bytes(self.decoded.len() as f64)
+        );
+        let mut extra_space = self.decoded.len().saturating_sub(min_size);
+        let mut dropped = 0;
+        while let Some(block) = self.blocks.back() {
+            if extra_space >= block.data.len() {
+                extra_space -= block.data.len();
+                dropped += block.data.len();
+                debug!("dropping block of {}", human_bytes(block.data.len() as f64));
+                self.blocks.pop_back();
+            } else {
+                break;
+            }
+        }
+        self.decoded.truncate(self.decoded.len() - dropped);
+        info!(
+            "shrink from back {} to {}",
+            human_bytes(dropped as f64),
+            human_bytes(self.decoded.len() as f64)
+        );
+        return dropped;
+    }
 }
 
 #[async_trait]
@@ -245,9 +298,8 @@ impl FileBuffer for Bz2FileBuffer {
             }
         };
 
-        let mut new = block.data.clone();
-        new.extend(self.decoded.iter());
-        self.decoded = new;
+        self.decoded.extend(block.data.iter());
+        self.decoded.rotate_right(block.data.len());
         self.blocks.push_front(block);
         return Ok(self.data().len() - size_before);
     }
@@ -272,11 +324,12 @@ impl FileBuffer for Bz2FileBuffer {
             }
 
             if end == self.decoded.len() {
-                match self.load_next().await {
+                let loaded = match self.load_next().await {
                     Ok(0) => return Ok(None),
                     Err(e) => return Err(e.into()),
-                    Ok(_) => (),
-                }
+                    Ok(loaded) => loaded,
+                };
+                end -= self.shrink_from_front(loaded + FIND_OVERLAP);
             }
 
             begin = end - FIND_OVERLAP;
@@ -313,6 +366,7 @@ impl FileBuffer for Bz2FileBuffer {
                         begin += size;
                     }
                 }
+                self.shrink_from_back(FIND_WINDOW + FIND_OVERLAP);
             }
 
             end = begin + FIND_OVERLAP;
